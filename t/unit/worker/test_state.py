@@ -220,3 +220,125 @@ class test_state_configuration():
         assert state.SUCCESSFUL_MAX == 1000
         assert state.REVOKE_EXPIRES == 10800
         assert state.SUCCESSFUL_EXPIRES == 10800
+
+
+@pytest.mark.usefixtures('reset_state')
+class test_revoked:
+    def test_revoked_maxlen(self):
+        """Test that revoked set respects REVOKES_MAX limit"""
+        # Fill beyond REVOKES_MAX
+        for i in range(state.REVOKES_MAX + 10):
+            state.revoked.add(f'task_{i}')
+        assert len(state.revoked) <= state.REVOKES_MAX
+
+    def test_revoked_expires(self):
+        """Test that revoked tasks expire after REVOKE_EXPIRES seconds"""
+        with patch('time.monotonic') as mock_time:
+            mock_time.return_value = 100.0
+            state.revoked.add('task_1')
+
+            # Check task exists
+            assert 'task_1' in state.revoked
+
+            # Move time forward just before expiration
+            mock_time.return_value = 100.0 + state.REVOKE_EXPIRES - 1
+            state.revoked.purge()  # Force purge
+            assert 'task_1' in state.revoked
+
+            # Move time forward past expiration
+            mock_time.return_value = 100.0 + state.REVOKE_EXPIRES + 1
+            state.revoked.purge()  # Force purge
+            assert 'task_1' not in state.revoked
+
+    def test_revoked_contains(self):
+        """Test membership testing of revoked tasks"""
+        task_id = 'task_1'
+        assert task_id not in state.revoked
+        state.revoked.add(task_id)
+        assert task_id in state.revoked
+
+    def test_revoked_stamps_update(self):
+        """Test revoked_stamps gets updated when revoking by headers"""
+        header = 'test_stamp'
+        stamp = 'stamp_1'
+
+        assert header not in state.revoked_stamps
+        state.revoked_stamps[header] = [stamp]  # This is how control.revoke_by_stamped_headers does it
+        assert header in state.revoked_stamps
+        assert stamp in state.revoked_stamps[header]
+
+    def test_revoked_persistence(self):
+        """Test that revoked set can be serialized/deserialized"""
+        original_tasks = {'task_1', 'task_2', 'task_3'}
+        for task_id in original_tasks:
+            state.revoked.add(task_id)
+
+        # Test pickling/unpickling
+        pickled = pickle.dumps(state.revoked)
+        unpickled = pickle.loads(pickled)
+
+        assert isinstance(unpickled, type(state.revoked))
+        assert all(task in unpickled for task in original_tasks)
+
+    def test_revoked_stamps_list_values(self):
+        """Test revoked_stamps handles list of stamps"""
+        header = 'test_stamp'
+        stamps = ['stamp_1', 'stamp_2', 'stamp_3']
+
+        state.revoked_stamps[header] = stamps
+        assert all(stamp in state.revoked_stamps[header] for stamp in stamps)
+
+    def test_revoked_stamps_update_existing(self):
+        """Test updating existing stamps in revoked_stamps"""
+        header = 'test_stamp'
+        initial_stamps = ['stamp_1', 'stamp_2']
+        new_stamps = ['stamp_3', 'stamp_4']
+
+        state.revoked_stamps[header] = initial_stamps
+        # Simulate how control.revoke_by_stamped_headers updates stamps
+        state.revoked_stamps[header] = initial_stamps + new_stamps
+
+        assert all(
+            stamp in state.revoked_stamps[header]
+            for stamp in initial_stamps + new_stamps)
+
+    def test_revoked_clear(self):
+        """Test clearing revoked set and stamps"""
+        # Add some revoked tasks
+        state.revoked.add('task_1')
+        state.revoked_stamps['header'] = ['stamp_1']
+
+        # Clear state
+        state.revoked.clear()
+        state.revoked_stamps.clear()
+
+        assert len(state.revoked) == 0
+        assert len(state.revoked_stamps) == 0
+
+    def test_revoked_purge_expired(self):
+        """Test purging expired tasks doesn't affect stamps"""
+        with patch('time.monotonic') as mock_time:
+            mock_time.return_value = 100.0
+            state.revoked.add('task_1')
+            state.revoked_stamps['header'] = ['stamp_1']
+
+            # Move time past expiration and purge
+            mock_time.return_value = 100.0 + state.REVOKE_EXPIRES + 1
+            state.revoked.purge()
+
+            # Revoked task should be gone but stamps remain
+            assert 'task_1' not in state.revoked
+            assert state.revoked_stamps['header'] == ['stamp_1']
+
+    def test_revoked_stamps_multiple_headers(self):
+        """Test handling multiple headers in revoked_stamps"""
+        headers = {
+            'header1': ['stamp1_1', 'stamp1_2'],
+            'header2': ['stamp2_1', 'stamp2_2']
+        }
+
+        for header, stamps in headers.items():
+            state.revoked_stamps[header] = stamps
+
+        for header, stamps in headers.items():
+            assert all(stamp in state.revoked_stamps[header] for stamp in stamps)
