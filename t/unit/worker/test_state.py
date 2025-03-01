@@ -220,3 +220,136 @@ class test_state_configuration():
         assert state.SUCCESSFUL_MAX == 1000
         assert state.REVOKE_EXPIRES == 10800
         assert state.SUCCESSFUL_EXPIRES == 10800
+
+
+@pytest.mark.usefixtures('reset_state')
+class test_request_sets:
+    """Tests for request tracking collections in worker state."""
+
+    def setup_method(self):
+        state.reset_state()
+
+    @pytest.fixture
+    def make_requests(self):
+        """Create request objects with given names."""
+        def _make(*names):
+            requests = [SimpleReq(name) for name in names]
+            # Return a single item for single requests, list otherwise
+            return requests[0] if len(requests) == 1 else requests
+        return _make
+
+    def test_reserved_requests(self, make_requests):
+        """Tasks are properly tracked in reserved_requests set."""
+        req1, req2 = make_requests('task1', 'task2')
+
+        assert len(state.reserved_requests) == 0
+
+        state.task_reserved(req1)
+        state.task_reserved(req2)
+
+        assert len(state.reserved_requests) == 2
+        assert req1 in state.reserved_requests
+        assert req2 in state.reserved_requests
+
+        state.task_ready(req1)
+        assert len(state.reserved_requests) == 1
+        assert req1 not in state.reserved_requests
+        assert req2 in state.reserved_requests
+
+    def test_active_requests(self, make_requests):
+        """Tasks are properly tracked in active_requests set."""
+        req1, req2 = make_requests('task1', 'task2')
+
+        assert len(state.active_requests) == 0
+
+        state.task_accepted(req1)
+        state.task_accepted(req2)
+
+        assert len(state.active_requests) == 2
+        assert req1 in state.active_requests
+        assert req2 in state.active_requests
+
+        state.task_ready(req1)
+        assert len(state.active_requests) == 1
+        assert req1 not in state.active_requests
+        assert req2 in state.active_requests
+
+    def test_successful_requests(self, make_requests):
+        """Only successfully completed tasks are added to successful_requests."""
+        req1, req2 = make_requests('task1', 'task2')
+
+        assert len(state.successful_requests) == 0
+
+        state.task_accepted(req1)
+        state.task_accepted(req2)
+
+        state.task_ready(req1, successful=False)
+        assert len(state.successful_requests) == 0
+
+        state.task_ready(req2, successful=True)
+        assert len(state.successful_requests) == 1
+        assert req2.id in state.successful_requests
+        assert req1.id not in state.successful_requests
+
+    def test_request_lifecycle(self, make_requests):
+        """Task properly transitions through reserved, active, and successful states."""
+        req = make_requests('task_lifecycle')
+
+        assert len(state.reserved_requests) == 0
+        assert len(state.active_requests) == 0
+        assert len(state.successful_requests) == 0
+
+        state.task_reserved(req)
+        assert req in state.reserved_requests
+        assert req not in state.active_requests
+
+        state.task_accepted(req)
+        assert req in state.reserved_requests  # Still in reserved
+        assert req in state.active_requests
+
+        state.task_ready(req, successful=True)
+        assert req not in state.reserved_requests
+        assert req not in state.active_requests
+        assert req.id in state.successful_requests
+
+    @pytest.mark.parametrize('test_limit,num_tasks,scenario', [
+        (5, 5, "Exact limit"),
+        (5, 10, "Exceeding limit"),
+        (1, 3, "Minimum limit")
+    ])
+    def test_successful_requests_limit(self, test_limit, num_tasks, scenario):
+        """successful_requests respects its configured size limit."""
+        original_limit = state.successful_requests.maxlen
+        try:
+            state.successful_requests.maxlen = test_limit
+
+            # Create and complete tasks
+            for i in range(num_tasks):
+                req = SimpleReq(f'task{i}')
+                state.task_accepted(req)
+                state.task_ready(req, successful=True)
+
+            # For exact limit, expect all tasks to be kept
+            # For other cases, expect only up to the limit
+            expected = min(test_limit, num_tasks)
+            assert len(state.successful_requests) == expected, \
+                f"{scenario}: Expected {expected} tasks in successful_requests"
+
+        finally:
+            state.successful_requests.maxlen = original_limit
+
+    def test_reset_state_clears_request_sets(self, make_requests):
+        """reset_state properly clears all request tracking collections."""
+        req1, req2 = make_requests('task1', 'task2')
+
+        state.task_reserved(req1)
+        state.task_accepted(req2)
+        state.task_ready(req1, successful=True)
+
+        assert state.reserved_requests or state.active_requests or state.successful_requests
+
+        state.reset_state()
+
+        assert len(state.reserved_requests) == 0
+        assert len(state.active_requests) == 0
+        assert len(state.successful_requests) == 0
