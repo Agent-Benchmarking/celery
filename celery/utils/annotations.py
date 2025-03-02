@@ -8,10 +8,8 @@ from inspect import isclass
 
 def is_none_type(value: typing.Any) -> bool:
     """Check if the given value is a NoneType."""
-    if sys.version_info < (3, 10):
-        # raise Exception('below 3.10', value, type(None))
-        return value is type(None)
-    return value == types.NoneType  # type: ignore[no-any-return]
+    # We keep both checks for maximum compatibility with Python 3.9
+    return value is type(None) or (sys.version_info >= (3, 10) and value == types.NoneType)
 
 
 def get_optional_arg(annotation: typing.Any) -> typing.Any:
