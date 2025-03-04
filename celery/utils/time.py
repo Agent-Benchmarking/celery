@@ -17,10 +17,14 @@ from dateutil import tz as dateutil_tz
 from dateutil.parser import isoparse
 from kombu.utils.functional import reprcall
 from kombu.utils.objects import cached_property
-from zoneinfo import ZoneInfo
 
 from .functional import dictfilter
 from .text import pluralize
+
+if sys.version_info >= (3, 9):
+    from zoneinfo import ZoneInfo
+else:
+    from backports.zoneinfo import ZoneInfo
 
 
 __all__ = (

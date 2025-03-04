@@ -8,7 +8,7 @@ Index
 
 * :file:`requirements/default.txt`
 
-    Default requirements for Python 3.9+.
+    Default requirements for Python 3.8+.
 
 
 * :file:`requirements/security.txt`
@@ -26,7 +26,7 @@ Index
 
 * :file:`requirements/test-ci-default.txt`
 
-    Extra test requirements required for Python 3.9 by the CI suite (Tox).
+    Extra test requirements required for Python 3.8 by the CI suite (Tox).
 
 * :file:`requirements/test-integration.txt`
 
