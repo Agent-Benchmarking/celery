@@ -107,8 +107,8 @@ def pydantic_wrapper(
     task_fun: typing.Callable[..., typing.Any],
     task_name: str,
     strict: bool = True,
-    context: typing.Optional[typing.Dict[str, typing.Any]] = None,
-    dump_kwargs: typing.Optional[typing.Dict[str, typing.Any]] = None
+    context: typing.Dict[str, typing.Any] | None = None,
+    dump_kwargs: typing.Dict[str, typing.Any] | None = None
 ):
     """Wrapper to validate arguments and serialize return values using Pydantic."""
     try:
@@ -219,7 +219,7 @@ class Celery:
 
     Keyword Arguments:
         broker (str): URL of the default broker used.
-        backend (Union[str, Type[celery.backends.base.Backend]]):
+        backend (str | Type[celery.backends.base.Backend]):
             The result store backend class, or the name of the backend
             class to use.
 
@@ -230,20 +230,20 @@ class Celery:
         set_as_current (bool):  Make this the global current app.
         include (List[str]): List of modules every worker should import.
 
-        amqp (Union[str, Type[AMQP]]): AMQP object or class name.
-        events (Union[str, Type[celery.app.events.Events]]): Events object or
+        amqp (str | Type[AMQP]): AMQP object or class name.
+        events (str | Type[celery.app.events.Events]): Events object or
             class name.
-        log (Union[str, Type[Logging]]): Log object or class name.
-        control (Union[str, Type[celery.app.control.Control]]): Control object
+        log (str | Type[Logging]): Log object or class name.
+        control (str | Type[celery.app.control.Control]): Control object
             or class name.
-        tasks (Union[str, Type[TaskRegistry]]): A task registry, or the name of
+        tasks (str | Type[TaskRegistry]): A task registry, or the name of
             a registry class.
         fixups (List[str]): List of fix-up plug-ins (e.g., see
             :mod:`celery.fixups.django`).
-        config_source (Union[str, class]): Take configuration from a class,
+        config_source (str | class): Take configuration from a class,
             or object.  Attributes may include any settings described in
             the documentation.
-        task_cls (Union[str, Type[celery.app.task.Task]]): base task class to
+        task_cls (str | Type[celery.app.task.Task]): base task class to
             use. See :ref:`this section <custom-task-cls-app-wide>` for usage.
     """
 
@@ -552,8 +552,8 @@ class Celery:
         bind=False,
         pydantic: bool = False,
         pydantic_strict: bool = False,
-        pydantic_context: typing.Optional[typing.Dict[str, typing.Any]] = None,
-        pydantic_dump_kwargs: typing.Optional[typing.Dict[str, typing.Any]] = None,
+        pydantic_context: typing.Dict[str, typing.Any] | None = None,
+        pydantic_dump_kwargs: typing.Dict[str, typing.Any] | None = None,
         **options,
     ):
         if not self.finalized and not self.autofinalize:
@@ -767,7 +767,7 @@ class Celery:
             packages (List[str]): List of packages to search.
                 This argument may also be a callable, in which case the
                 value returned is used (for lazy evaluation).
-            related_name (Optional[str]): The name of the module to find.  Defaults
+            related_name (str | None): The name of the module to find.  Defaults
                 to "tasks": meaning "look for 'module.tasks' for every
                 module in ``packages``.".  If ``None`` will only try to import
                 the package, i.e. "look for 'module'".
@@ -895,6 +895,7 @@ class Celery:
                 if conf.task_inherit_parent_priority:
                     options.setdefault('priority',
                                        parent.request.delivery_info.get('priority'))
+        )
 
         # alias for 'task_as_v2'
         message = amqp.create_task_message(

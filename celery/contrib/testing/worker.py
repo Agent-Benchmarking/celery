@@ -3,7 +3,7 @@ import logging
 import os
 import threading
 from contextlib import contextmanager
-from typing import Any, Iterable, Optional, Union
+from typing import Any, Iterable, Optional
 
 import celery.worker.consumer  # noqa
 from celery import Celery, worker
@@ -99,7 +99,7 @@ def start_worker(
     app,  # type: Celery
     concurrency=1,  # type: int
     pool='solo',  # type: str
-    loglevel=WORKER_LOGLEVEL,  # type: Union[str, int]
+    loglevel=WORKER_LOGLEVEL,  # type: str | int
     logfile=None,  # type: str
     perform_ping_check=True,  # type: bool
     ping_task_timeout=10.0,  # type: float
@@ -138,8 +138,8 @@ def start_worker(
 def _start_worker_thread(app: Celery,
                          concurrency: int = 1,
                          pool: str = 'solo',
-                         loglevel: Union[str, int] = WORKER_LOGLEVEL,
-                         logfile: Optional[str] = None,
+                         loglevel: str | int = WORKER_LOGLEVEL,
+                         logfile: str | None = None,
                          WorkController: Any = TestWorkController,
                          perform_ping_check: bool = True,
                          shutdown_timeout: float = 10.0,
@@ -191,13 +191,12 @@ def _start_worker_thread(app: Celery,
 
 
 @contextmanager
-def _start_worker_process(app,
-                          concurrency=1,
-                          pool='solo',
-                          loglevel=WORKER_LOGLEVEL,
-                          logfile=None,
-                          **kwargs):
-    # type (Celery, int, str, Union[int, str], str, **Any) -> Iterable
+def _start_worker_process(app: Celery,
+                          concurrency: int = 1,
+                          pool: str = 'solo',
+                          loglevel: str | int = WORKER_LOGLEVEL,
+                          logfile: str | None = None,
+                          **kwargs) -> Iterable:
     """Start worker in separate process.
 
     Yields:
@@ -214,7 +213,7 @@ def _start_worker_process(app,
         cluster.stopwait()
 
 
-def setup_app_for_worker(app: Celery, loglevel: Union[str, int], logfile: str) -> None:
+def setup_app_for_worker(app: Celery, loglevel: str | int, logfile: str) -> None:
     """Setup the app to be used for starting an embedded worker."""
     app.finalize()
     app.set_current()

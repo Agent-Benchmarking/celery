@@ -17,7 +17,7 @@ def test_is_none_type(value: typing.Any, expected: bool) -> None:
 
 
 def test_is_none_type_with_optional_annotations() -> None:
-    annotation = typing.Optional[int]
+    annotation = int | None
     int_type, none_type = typing.get_args(annotation)
     assert int_type == int  # just to make sure that order is correct
     assert is_none_type(int_type) is False
@@ -27,11 +27,11 @@ def test_is_none_type_with_optional_annotations() -> None:
 def test_get_optional_arg() -> None:
     def func(
         arg: int,
-        optional: typing.Optional[int],
-        optional2: typing.Union[int, None],
-        optional3: typing.Union[None, int],
-        not_optional1: typing.Union[str, int],
-        not_optional2: typing.Union[str, int, bool],
+        optional: int | None,
+        optional2: int | None,
+        optional3: None | int,
+        not_optional1: str | int,
+        not_optional2: str | int | bool,
     ) -> None:
         pass
 

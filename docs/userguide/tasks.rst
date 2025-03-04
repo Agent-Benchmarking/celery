@@ -842,7 +842,7 @@ the returned model "dumped" (serialized using ``BaseModel.model_dump()``):
 Union types, arguments to generics
 ----------------------------------
 
-Union types (e.g. ``Union[SomeModel, OtherModel]``) or arguments to generics (e.g.
+Union types (e.g. ``SomeModel | OtherModel``) or arguments to generics (e.g.
 ``list[SomeModel]``) are **not** supported.
 
 In case you want to support a list or similar types, it is recommended to use
@@ -856,12 +856,12 @@ Optional parameters or return values are also handled properly. For example, giv
 
 .. code-block:: python
 
-    from typing import Optional
+    from celery import Celery
 
     # models are the same as above
 
     @app.task(pydantic=True)
-    def x(arg: Optional[ArgModel] = None) -> Optional[ReturnModel]:
+    def x(arg: ArgModel | None = None) -> ReturnModel | None:
         if arg is None:
             return None
         return ReturnModel(value=f"example: {arg.value}")
@@ -871,11 +871,11 @@ You'll get the following behavior:
 .. code-block:: python
 
     >>> result = x.delay()
-   >>> result.get(timeout=1) is None
-   True
-   >>> result = x.delay({'value': 1})
-   >>> result.get(timeout=1)
-   {'value': 'example: 1'}
+    >>> result.get(timeout=1) is None
+    True
+    >>> result = x.delay({'value': 1})
+    >>> result.get(timeout=1)
+    {'value': 'example: 1'}
 
 Return value handling
 ---------------------
@@ -1958,8 +1958,8 @@ Since Celery is a distributed system, you can't know which process, or
 on what machine the task will be executed. You can't even know if the task will
 run in a timely manner.
 
-The ancient async sayings tells us that “asserting the world is the
-responsibility of the task”. What this means is that the world view may
+The ancient async sayings tells us that "asserting the world is the
+responsibility of the task". What this means is that the world view may
 have changed since the task was requested, so the task is responsible for
 making sure the world is how it should be;  If you have a task
 that re-indexes a search engine, and the search engine should only be
