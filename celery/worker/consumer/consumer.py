@@ -323,6 +323,26 @@ class Consumer:
         return self._schedule_bucket_request(bucket)
 
     def start(self):
+        """Start the consumer message consumption loop.
+
+        Establishes broker connection and begins consuming messages.
+        Handles connection errors and automatic reconnection if enabled.
+
+        Raises:
+            WorkerShutdown: If connection retry is disabled and connection fails
+            WorkerTerminate: If too many open files
+            RestartFreqExceeded: If restart frequency is exceeded
+
+        Example:
+            >>> consumer = Consumer(...)
+            >>> consumer.start()
+
+        Note:
+            The behavior on connection failure is controlled by:
+            - broker_connection_retry: Whether to retry connections
+            - broker_connection_retry_on_startup: Retry behavior on first connect
+            - broker_connection_max_retries: Maximum number of retries
+        """
         blueprint = self.blueprint
         while blueprint.state not in STOP_CONDITIONS:
             maybe_shutdown()
@@ -413,18 +433,61 @@ class Consumer:
         )
 
     def shutdown(self):
+        """Gracefully shut down the consumer.
+
+        Performs pending operations and initiates blueprint shutdown sequence.
+
+        Example:
+            >>> consumer.shutdown()
+            # Executes pending operations
+            # Stops all blueprint components
+        """
         self.perform_pending_operations()
         self.blueprint.shutdown(self)
 
     def stop(self):
+        """Stop the consumer immediately.
+
+        Initiates immediate blueprint stop sequence without waiting for
+        pending operations.
+
+        Example:
+            >>> consumer.stop()
+            # Immediately stops all blueprint components
+        """
         self.blueprint.stop(self)
 
     def on_ready(self):
+        """Call the init_callback if defined.
+
+        Called when the consumer is ready to handle tasks.
+
+        Note:
+            The callback is only called once and then reset to None.
+        """
         callback, self.init_callback = self.init_callback, None
         if callback:
             callback(self)
 
     def loop_args(self):
+        """Get the consumer loop arguments.
+
+        Returns:
+            tuple: Arguments needed for the consumer event loop:
+                - consumer instance
+                - connection
+                - task consumer
+                - blueprint
+                - hub
+                - QoS object
+                - AMQP heartbeat
+                - app clock
+                - heartbeat check rate
+
+        Example:
+            >>> args = consumer.loop_args()
+            >>> consumer.loop(*args)
+        """
         return (self, self.connection, self.task_consumer,
                 self.blueprint, self.hub, self.qos, self.amqheartbeat,
                 self.app.clock, self.amqheartbeat_rate)
@@ -466,8 +529,20 @@ class Consumer:
     def connect(self):
         """Establish the broker connection used for consuming tasks.
 
-        Retries establishing the connection if the
-        :setting:`broker_connection_retry` setting is enabled
+        Returns:
+            Connection: The established broker connection.
+
+        Raises:
+            OperationalError: If connection cannot be established and retries
+                are disabled or exhausted.
+
+        Example:
+            >>> conn = consumer.connect()
+            >>> assert conn.connected
+
+        Note:
+            If using the event loop (hub), the connection's transport
+            is registered with the event loop.
         """
         conn = self.connection_for_read(heartbeat=self.amqheartbeat)
         if self.hub:
@@ -475,10 +550,36 @@ class Consumer:
         return conn
 
     def connection_for_read(self, heartbeat=None):
+        """Create a connection for consuming messages.
+
+        Args:
+            heartbeat (int): Optional AMQP heartbeat timeout in seconds.
+
+        Returns:
+            Connection: Connection configured for reading/consuming.
+
+        Example:
+            >>> conn = consumer.connection_for_read(heartbeat=30)
+        """
         return self.ensure_connected(
             self.app.connection_for_read(heartbeat=heartbeat))
 
     def connection_for_write(self, url=None, heartbeat=None):
+        """Create a connection for publishing messages.
+
+        Args:
+            url (str): Optional broker URL to connect to.
+            heartbeat (int): Optional AMQP heartbeat timeout in seconds.
+
+        Returns:
+            Connection: Connection configured for writing/publishing.
+
+        Example:
+            >>> conn = consumer.connection_for_write(
+            ...     url='amqp://broker',
+            ...     heartbeat=30
+            ... )
+        """
         return self.ensure_connected(
             self.app.connection_for_write(url=url, heartbeat=heartbeat))
 
@@ -544,6 +645,26 @@ class Consumer:
 
     def add_task_queue(self, queue, exchange=None, exchange_type=None,
                        routing_key=None, **options):
+        """Add a new task queue to the consumer.
+
+        Args:
+            queue (str): Name of the queue to add.
+            exchange (str): Optional name of the exchange (defaults to queue name).
+            exchange_type (str): Optional exchange type (defaults to 'direct').
+            routing_key (str): Optional routing key for the queue.
+            **options: Additional queue declaration options.
+
+        Example:
+            >>> consumer.add_task_queue(
+            ...     'myqueue',
+            ...     exchange='myexchange',
+            ...     routing_key='mykey'
+            ... )
+
+        Note:
+            If task_create_missing_queues is enabled, the queue will be
+            created if it doesn't exist.
+        """
         cset = self.task_consumer
         queues = self.app.amqp.queues
         # Must use in' here, as __missing__ will automatically
@@ -565,12 +686,29 @@ class Consumer:
             info('Started consuming from %s', queue)
 
     def cancel_task_queue(self, queue):
+        """Cancel consumption from a task queue.
+
+        Args:
+            queue (str): Name of the queue to cancel.
+
+        Example:
+            >>> consumer.cancel_task_queue('myqueue')
+            Canceling queue myqueue
+        """
         info('Canceling queue %s', queue)
         self.app.amqp.queues.deselect(queue)
         self.task_consumer.cancel_by_queue(queue)
 
     def apply_eta_task(self, task):
-        """Method called by the timer to apply a task with an ETA/countdown."""
+        """Apply a task with an ETA/countdown.
+
+        Args:
+            task (Task): Task instance to execute.
+
+        Note:
+            This method is called by the timer when a task's
+            ETA (estimated time of arrival) has been reached.
+        """
         task_reserved(task)
         self.on_task_request(task)
         self.qos.decrement_eventually()
@@ -583,11 +721,33 @@ class Consumer:
                                      safe_repr(message.headers))
 
     def on_unknown_message(self, body, message):
+        """Handle unknown messages.
+
+        Args:
+            body: The message body.
+            message (Message): The received message instance.
+
+        Note:
+            Unknown messages are rejected and logged with a warning.
+            This typically happens when messages are sent to the wrong
+            queue or have an invalid format.
+        """
         warn(UNKNOWN_FORMAT, self._message_report(body, message))
         message.reject_log_error(logger, self.connection_errors)
         signals.task_rejected.send(sender=self, message=message, exc=None)
 
     def on_unknown_task(self, body, message, exc):
+        """Handle messages for unknown tasks.
+
+        Args:
+            body: The message body.
+            message (Message): The received message instance.
+            exc (KeyError): The exception indicating unknown task.
+
+        Note:
+            Unknown tasks are rejected and marked as failed in the result backend.
+            A task-failed event is dispatched and task_unknown signal is sent.
+        """
         error(UNKNOWN_TASK_ERROR,
               exc,
               dump_body(message, body),
@@ -621,12 +781,35 @@ class Consumer:
         )
 
     def on_invalid_task(self, body, message, exc):
+        """Handle invalid task messages.
+
+        Args:
+            body: The message body.
+            message (Message): The received message instance.
+            exc (Exception): The exception indicating task invalidity.
+
+        Note:
+            Invalid tasks are rejected and logged as errors.
+            A task_rejected signal is sent.
+        """
         error(INVALID_TASK_ERROR, exc, dump_body(message, body),
               exc_info=True)
         message.reject_log_error(logger, self.connection_errors)
         signals.task_rejected.send(sender=self, message=message, exc=exc)
 
     def update_strategies(self):
+        """Update task execution strategies.
+
+        Updates the task registry with execution strategies for all registered
+        tasks. Called when tasks are added or removed from the worker.
+
+        Example:
+            >>> consumer.update_strategies()
+            # All task strategies are rebuilt
+
+        Note:
+            Each task's execution tracer is also rebuilt during this process.
+        """
         loader = self.app.loader
         for name, task in self.app.tasks.items():
             self.strategies[name] = task.start_strategy(self.app, self)
@@ -634,6 +817,22 @@ class Consumer:
                                           app=self.app)
 
     def create_task_handler(self, promise=promise):
+        """Create a handler for processing task messages.
+
+        Args:
+            promise (type): Promise implementation for handling acknowledgments.
+
+        Returns:
+            callable: Function that processes task messages.
+
+        Example:
+            >>> handler = consumer.create_task_handler()
+            >>> handler(message)
+
+        Note:
+            The handler manages message decoding, task lookup, execution
+            strategy selection, and error handling.
+        """
         strategies = self.strategies
         on_unknown_message = self.on_unknown_message
         on_unknown_task = self.on_unknown_task
@@ -734,10 +933,21 @@ class Consumer:
         )
 
     def cancel_all_unacked_requests(self):
-        """Cancel all active requests that either do not require late acknowledgments or,
-        if they do, have not been acknowledged yet.
-        """
+        """Cancel all active requests that need cancellation.
 
+        Cancels requests that either do not require late acknowledgments or,
+        if they do, have not been acknowledged yet.
+
+        Example:
+            >>> consumer.cancel_all_unacked_requests()
+            # Cancels eligible task requests
+
+        Note:
+            Tasks are cancelled if:
+            - They don't require late acknowledgment
+            - They require late acknowledgment but haven't been acknowledged yet
+            Tasks that have already been acknowledged are allowed to complete.
+        """
         def should_cancel(request):
             if not request.task.acks_late:
                 # Task does not require late acknowledgment, cancel it.
@@ -758,10 +968,17 @@ class Consumer:
 
 
 class Evloop(bootsteps.StartStopStep):
-    """Event loop service.
+    """Event loop service for the Consumer.
+
+    The Evloop is responsible for running the consumer's main event loop,
+    handling asynchronous operations and event processing.
+
+    Attributes:
+        label (str): Name of this component ('event loop')
+        last (bool): Indicates this is the last component to start
 
     Note:
-        This is always started last.
+        This component is always started last in the blueprint sequence.
     """
 
     label = 'event loop'
