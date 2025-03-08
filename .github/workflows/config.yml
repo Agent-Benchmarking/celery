@@ -1,21 +1,26 @@
 name: Workflow Configuration
-python-versions: &python-versions
-  - '3.8'
-  - '3.9'
-  - '3.10'
-  - '3.11'
-  - '3.12'
-  - '3.13'
-  - 'pypy-3.10'
 
-smoke-test-cases: &smoke-test-cases
-  - 'failover'
-  - 'quorum_queues'
-  - 'stamping'
-  - 'test_canvas.py'
-  - 'test_consumer.py'
-  - 'test_control.py'
-  - 'test_signals.py'
-  - 'test_tasks.py'
-  - 'test_thread_safe.py'
-  - 'test_worker.py' 
+on:
+  workflow_call:  # Make this a reusable workflow
+
+defaults:
+  python-versions: &python-versions
+    - '3.8'
+    - '3.9'
+    - '3.10'
+    - '3.11'
+    - '3.12'
+    - '3.13'
+    - 'pypy-3.10'
+
+  smoke-test-cases: &smoke-test-cases
+    - 'failover'
+    - 'quorum_queues'
+    - 'stamping'
+    - 'test_canvas.py'
+    - 'test_consumer.py'
+    - 'test_control.py'
+    - 'test_signals.py'
+    - 'test_tasks.py'
+    - 'test_thread_safe.py'
+    - 'test_worker.py' 
