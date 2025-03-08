@@ -238,6 +238,18 @@ class Consumer:
         self.blueprint.apply(self, **dict(worker_options or {}, **kwargs))
 
     def call_soon(self, p, *args, **kwargs):
+        """Schedule a function for execution in the next event loop iteration.
+
+        If no event loop is available, queues the function in pending operations.
+
+        Arguments:
+            p: Function to schedule.
+            *args: Positional arguments to pass to function.
+            **kwargs: Keyword arguments to pass to function.
+
+        Returns:
+            promise: Promise object representing the scheduled call.
+        """
         p = ppartial(p, *args, **kwargs)
         if self.hub:
             return self.hub.call_soon(p)
@@ -245,6 +257,11 @@ class Consumer:
         return p
 
     def perform_pending_operations(self):
+        """Execute any pending operations if not using an event hub.
+
+        Executes all pending operations that were scheduled with call_soon()
+        when not using an event hub.
+        """
         if not self.hub:
             while self._pending_operations:
                 try:
@@ -253,10 +270,25 @@ class Consumer:
                     logger.exception('Pending callback raised: %r', exc)
 
     def bucket_for_task(self, type):
+        """Create token bucket for task rate limiting.
+
+        Arguments:
+            type: Task type to create bucket for. Must have a rate_limit attribute
+                 that defines the maximum rate of task execution.
+
+        Returns:
+            TokenBucket: Rate limiting bucket with capacity of 1, or None if rate
+                        limits are disabled for this task.
+        """
         limit = rate(getattr(type, 'rate_limit', None))
         return TokenBucket(limit, capacity=1) if limit else None
 
     def reset_rate_limits(self):
+        """Reset rate limit buckets for all registered tasks.
+
+        Creates new token buckets for all registered tasks based on their
+        rate limit settings.
+        """
         self.task_buckets.update(
             (n, self.bucket_for_task(t)) for n, t in self.app.tasks.items()
         )
@@ -264,8 +296,8 @@ class Consumer:
     def _update_prefetch_count(self, index=0):
         """Update prefetch count after pool/shrink grow operations.
 
-        Index must be the change in number of processes as a positive
-        (increasing) or negative (decreasing) number.
+        Arguments:
+            index: Change in number of processes (positive for increase, negative for decrease).
 
         Note:
             Currently pool grow operations will end up with an offset
@@ -281,15 +313,36 @@ class Consumer:
         return self._update_qos_eventually(index)
 
     def _update_qos_eventually(self, index):
+        """Update QOS (quality of service) value eventually.
+
+        Arguments:
+            index: Change in number of processes (positive for increase, negative for decrease).
+
+        Returns:
+            promise: Promise to update QOS value.
+        """
         return (self.qos.decrement_eventually if index < 0
                 else self.qos.increment_eventually)(
             abs(index) * self.prefetch_multiplier)
 
     def _limit_move_to_pool(self, request):
+        """Move rate limited task request to the pool.
+
+        Arguments:
+            request: Task request to move to pool.
+        """
         task_reserved(request)
         self.on_task_request(request)
 
     def _schedule_bucket_request(self, bucket):
+        """Process and schedule rate limited task requests from a bucket.
+
+        Processes requests in order, moving them to the pool if tokens are available
+        or requeueing them with a timer if rate limit is exceeded.
+
+        Arguments:
+            bucket: TokenBucket instance containing task requests.
+        """
         while True:
             try:
                 request, tokens = bucket.pop()
@@ -314,15 +367,42 @@ class Consumer:
                 break
 
     def _limit_task(self, request, bucket, tokens):
+        """Add task request to rate limiting bucket for delayed processing.
+
+        Arguments:
+            request: Task request to limit.
+            bucket: TokenBucket that manages rate limiting for this task type.
+            tokens: Number of tokens this task execution requires.
+
+        Returns:
+            promise: Promise to schedule the request when rate limit allows.
+        """
         bucket.add((request, tokens))
         return self._schedule_bucket_request(bucket)
 
     def _limit_post_eta(self, request, bucket, tokens):
+        """Add ETA task request to rate limiting bucket after its ETA has passed.
+
+        Decrements QOS to prevent prefetching additional tasks while this one waits.
+
+        Arguments:
+            request: Task request to limit.
+            bucket: TokenBucket that manages rate limiting for this task type.
+            tokens: Number of tokens this task execution requires.
+
+        Returns:
+            promise: Promise to schedule the request when rate limit allows.
+        """
         self.qos.decrement_eventually()
         bucket.add((request, tokens))
         return self._schedule_bucket_request(bucket)
 
     def start(self):
+        """Start the consumer.
+
+        Starts the consumer blueprint and handles connection errors and retries.
+        Will properly shutdown or terminate if connection retries are disabled.
+        """
         blueprint = self.blueprint
         while blueprint.state not in STOP_CONDITIONS:
             maybe_shutdown()
@@ -366,16 +446,34 @@ class Consumer:
                     blueprint.restart(self)
 
     def _get_connection_retry_type(self, is_connection_loss_on_startup):
+        """Get the appropriate connection retry configuration setting.
+
+        Arguments:
+            is_connection_loss_on_startup: Whether this is the first connection attempt.
+
+        Returns:
+            str: Name of the configuration setting to use.
+        """
         return ('broker_connection_retry_on_startup'
                 if (is_connection_loss_on_startup
                     and self.app.conf.broker_connection_retry_on_startup is not None)
                 else 'broker_connection_retry')
 
     def on_connection_error_before_connected(self, exc):
+        """Handle connection error before broker connection is established.
+
+        Arguments:
+            exc: The connection error exception.
+        """
         error(CONNECTION_ERROR, self.conninfo.as_uri(), exc,
               'Trying to reconnect...')
 
     def on_connection_error_after_connected(self, exc):
+        """Handle connection error after broker connection was established.
+
+        Arguments:
+            exc: The connection error exception.
+        """
         warn(CONNECTION_RETRY, exc_info=True)
         try:
             self.connection.collect()
@@ -407,24 +505,46 @@ class Consumer:
                 )
 
     def register_with_event_loop(self, hub):
+        """Register consumer components with the event loop.
+
+        Arguments:
+            hub: Event loop hub to register with.
+        """
         self.blueprint.send_all(
             self, 'register_with_event_loop', args=(hub,),
             description='Hub.register',
         )
 
     def shutdown(self):
+        """Stop the consumer blueprint.
+
+        Initiates the shutdown sequence for the consumer.
+        """
         self.perform_pending_operations()
         self.blueprint.shutdown(self)
 
     def stop(self):
+        """Stop the consumer blueprint.
+
+        Initiates the shutdown sequence for the consumer.
+        """
         self.blueprint.stop(self)
 
     def on_ready(self):
+        """Called when the consumer is ready to accept tasks.
+
+        Executes the init_callback if one is registered.
+        """
         callback, self.init_callback = self.init_callback, None
         if callback:
             callback(self)
 
     def loop_args(self):
+        """Get the consumer loop arguments.
+
+        Returns:
+            tuple: Arguments to pass to the consumer event loop.
+        """
         return (self, self.connection, self.task_consumer,
                 self.blueprint, self.hub, self.qos, self.amqheartbeat,
                 self.app.clock, self.amqheartbeat_rate)
@@ -446,6 +566,11 @@ class Consumer:
         message.ack()
 
     def on_close(self):
+        """Clean up resources when consumer connection is closed.
+
+        Clears internal queues, timers, and task buckets since delivery tags
+        are no longer valid after connection close.
+        """
         # Clear internal queues to get rid of old messages.
         # They can't be acked anyway, as a delivery tag is specific
         # to the current channel.
@@ -466,8 +591,12 @@ class Consumer:
     def connect(self):
         """Establish the broker connection used for consuming tasks.
 
-        Retries establishing the connection if the
-        :setting:`broker_connection_retry` setting is enabled
+        Returns:
+            Connection: The established broker connection.
+
+        Note:
+            Retries establishing the connection if the
+            :setting:`broker_connection_retry` setting is enabled.
         """
         conn = self.connection_for_read(heartbeat=self.amqheartbeat)
         if self.hub:
@@ -475,14 +604,39 @@ class Consumer:
         return conn
 
     def connection_for_read(self, heartbeat=None):
+        """Get a connection for consuming messages.
+
+        Arguments:
+            heartbeat: Optional heartbeat timeout value.
+
+        Returns:
+            Connection: Connection object configured for reading.
+        """
         return self.ensure_connected(
             self.app.connection_for_read(heartbeat=heartbeat))
 
     def connection_for_write(self, url=None, heartbeat=None):
+        """Get a connection for publishing messages.
+
+        Arguments:
+            url: Optional broker URL to connect to.
+            heartbeat: Optional heartbeat timeout value.
+
+        Returns:
+            Connection: Connection object configured for writing.
+        """
         return self.ensure_connected(
             self.app.connection_for_write(url=url, heartbeat=heartbeat))
 
     def ensure_connected(self, conn):
+        """Ensure connection is established, with retries if enabled.
+
+        Arguments:
+            conn: Connection instance to ensure is connected.
+
+        Returns:
+            Connection: The connected connection instance.
+        """
         # Callback called for each retry while the connection
         # can't be established.
         def _error_handler(exc, interval, next_step=CONNECTION_RETRY_STEP):
@@ -535,15 +689,32 @@ class Consumer:
         return conn
 
     def _flush_events(self):
+        """Flush any pending events in the event dispatcher.
+
+        Ensures all buffered events are sent to the event dispatcher.
+        """
         if self.event_dispatcher:
             self.event_dispatcher.flush()
 
     def on_send_event_buffered(self):
+        """Called when an event is buffered.
+
+        Schedules event flushing with the event loop if using a hub.
+        """
         if self.hub:
             self.hub._ready.add(self._flush_events)
 
     def add_task_queue(self, queue, exchange=None, exchange_type=None,
                        routing_key=None, **options):
+        """Add a queue to the list of queues to consume from.
+
+        Arguments:
+            queue: Name of the queue.
+            exchange: Optional exchange name.
+            exchange_type: Optional exchange type.
+            routing_key: Optional routing key.
+            **options: Additional options for queue declaration.
+        """
         cset = self.task_consumer
         queues = self.app.amqp.queues
         # Must use in' here, as __missing__ will automatically
@@ -565,17 +736,35 @@ class Consumer:
             info('Started consuming from %s', queue)
 
     def cancel_task_queue(self, queue):
+        """Cancel consuming from a queue.
+
+        Arguments:
+            queue: Name of the queue to cancel.
+        """
         info('Canceling queue %s', queue)
         self.app.amqp.queues.deselect(queue)
         self.task_consumer.cancel_by_queue(queue)
 
     def apply_eta_task(self, task):
-        """Method called by the timer to apply a task with an ETA/countdown."""
+        """Apply a task with an ETA/countdown.
+
+        Arguments:
+            task: Task instance to apply.
+        """
         task_reserved(task)
         self.on_task_request(task)
         self.qos.decrement_eventually()
 
     def _message_report(self, body, message):
+        """Format message contents for error reporting.
+
+        Arguments:
+            body: Message body.
+            message: Message object.
+
+        Returns:
+            str: Formatted message report.
+        """
         return MESSAGE_REPORT.format(dump_body(message, body),
                                      safe_repr(message.content_type),
                                      safe_repr(message.content_encoding),
@@ -583,11 +772,24 @@ class Consumer:
                                      safe_repr(message.headers))
 
     def on_unknown_message(self, body, message):
+        """Handle unknown message.
+
+        Arguments:
+            body: Message body.
+            message: Message object.
+        """
         warn(UNKNOWN_FORMAT, self._message_report(body, message))
         message.reject_log_error(logger, self.connection_errors)
         signals.task_rejected.send(sender=self, message=message, exc=None)
 
     def on_unknown_task(self, body, message, exc):
+        """Handle message for unknown task.
+
+        Arguments:
+            body: Message body.
+            message: Message object.
+            exc: Exception instance.
+        """
         error(UNKNOWN_TASK_ERROR,
               exc,
               dump_body(message, body),
@@ -621,12 +823,23 @@ class Consumer:
         )
 
     def on_invalid_task(self, body, message, exc):
+        """Handle message for invalid task.
+
+        Arguments:
+            body: Message body.
+            message: Message object.
+            exc: Exception instance.
+        """
         error(INVALID_TASK_ERROR, exc, dump_body(message, body),
               exc_info=True)
         message.reject_log_error(logger, self.connection_errors)
         signals.task_rejected.send(sender=self, message=message, exc=exc)
 
     def update_strategies(self):
+        """Update task execution strategies.
+
+        Updates the task execution strategies for all registered tasks.
+        """
         loader = self.app.loader
         for name, task in self.app.tasks.items():
             self.strategies[name] = task.start_strategy(self.app, self)
@@ -634,6 +847,14 @@ class Consumer:
                                           app=self.app)
 
     def create_task_handler(self, promise=promise):
+        """Create handler for received task messages.
+
+        Arguments:
+            promise: Promise implementation to use.
+
+        Returns:
+            callable: Handler function for task messages.
+        """
         strategies = self.strategies
         on_unknown_message = self.on_unknown_message
         on_unknown_task = self.on_unknown_task
@@ -699,6 +920,15 @@ class Consumer:
         return on_task_received
 
     def _restore_prefetch_count_after_connection_restart(self, p, *args):
+        """Gradually restore the prefetch count to its maximum after a connection restart.
+
+        Only increases if worker_enable_prefetch_count_reduction is enabled and maximum
+        has not been restored yet.
+
+        Arguments:
+            p: Promise object that triggered this restoration.
+            *args: Additional arguments from the promise.
+        """
         with self.qos._mutex:
             if any((
                 not self.app.conf.worker_enable_prefetch_count_reduction,
@@ -721,23 +951,42 @@ class Consumer:
 
     @property
     def max_prefetch_count(self):
+        """Maximum prefetch count based on pool size and multiplier.
+
+        Returns:
+            int: Maximum prefetch count value.
+        """
         return self.pool.num_processes * self.prefetch_multiplier
 
     @property
     def _new_prefetch_count(self):
+        """Calculate new prefetch count value.
+
+        Returns:
+            int: New prefetch count value.
+        """
         return self.qos.value + self.prefetch_multiplier
 
     def __repr__(self):
-        """``repr(self)``."""
+        """Format string representation of the consumer.
+
+        Returns:
+            str: Consumer representation with hostname and state.
+        """
         return '<Consumer: {self.hostname} ({state})>'.format(
             self=self, state=self.blueprint.human_state(),
         )
 
     def cancel_all_unacked_requests(self):
-        """Cancel all active requests that either do not require late acknowledgments or,
-        if they do, have not been acknowledged yet.
-        """
+        """Cancel all unacknowledged task requests.
 
+        Cancels active task requests that either:
+        - Do not require late acknowledgment
+        - Require late acknowledgment but have not been acknowledged yet
+
+        Tasks that require late acknowledgment and have already been
+        acknowledged are allowed to finish gracefully.
+        """
         def should_cancel(request):
             if not request.task.acks_late:
                 # Task does not require late acknowledgment, cancel it.
