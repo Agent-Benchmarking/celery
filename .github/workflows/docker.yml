@@ -25,8 +25,8 @@ on:
 
 
 jobs:
-  docker-build:
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+  docker:
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
     - uses: actions/checkout@v4
