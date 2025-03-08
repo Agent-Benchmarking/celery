@@ -44,7 +44,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: *python-versions
-        os: ["blacksmith-4vcpu-ubuntu-2204", "windows-latest"]
+        os: ["ubuntu-latest", "windows-latest"]
         exclude:
           - os: "windows-latest"
             python-version: '3.9'
@@ -78,7 +78,7 @@ jobs:
     needs: [Unit]
     if: needs.Unit.result == 'success'
     timeout-minutes: 240
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+    runs-on: ubuntu-latest
     
     strategy:
       fail-fast: false
@@ -115,7 +115,7 @@ jobs:
   Smoke:
     needs: [Unit]
     if: needs.Unit.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+    runs-on: ubuntu-latest
     
     strategy:
       fail-fast: false
