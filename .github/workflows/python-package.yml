@@ -60,7 +60,7 @@ jobs:
           mypy .
 
   Unit:
-    needs: [Lint]  # Make Unit tests wait for Lint to pass
+    needs: [Lint]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -81,9 +81,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/workflows/setup-python-env
+      
+      - name: Install apt packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -f libcurl4-openssl-dev libssl-dev libgnutls28-dev httping expect libmemcached-dev
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: useblacksmith/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+          cache: 'pip'
+          cache-dependency-path: '**/setup.py'
+
+      - name: Install tox
+        run: python -m pip install --upgrade pip 'tox' tox-gh-actions
       
       - name: Run tox
         timeout-minutes: 30
