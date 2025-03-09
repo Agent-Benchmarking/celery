@@ -1,5 +1,4 @@
-# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
-# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+# Celery CI workflow for testing across Python versions
 
 name: Celery
 
@@ -22,13 +21,12 @@ on:
         - "tox.ini"
   workflow_dispatch:
 
-
 permissions:
   contents: read # to fetch code (actions/checkout)
 
 jobs:
   Unit:
-
+    # Unit tests across multiple Python versions and operating systems
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -63,33 +61,30 @@ jobs:
 
     - name: Install tox
       run: python -m pip install --upgrade pip 'tox' tox-gh-actions
-    - name: >
-        Run tox for
-        "${{ matrix.python-version }}-unit"
+    - name: Run unit tests
       timeout-minutes: 30
-      run: |
-        tox --verbose --verbose
+      run: tox --verbose --verbose
 
-    - uses: codecov/codecov-action@v5
+    - name: Upload coverage
+      uses: codecov/codecov-action@v5
       with:
-        flags: unittests # optional
-        fail_ci_if_error: true # optional (default = false)
+        flags: unittests
+        fail_ci_if_error: true
         token: ${{ secrets.CODECOV_TOKEN }}
-        verbose: true # optional (default = false)
+        verbose: true
 
   Integration:
+      # Integration tests with various backends (runs after unit tests)
       needs:
       - Unit
       if: needs.Unit.result == 'success'
       timeout-minutes: 240
-
       runs-on: blacksmith-4vcpu-ubuntu-2204
       strategy:
           fail-fast: false
           matrix:
               python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
               toxenv: ['redis', 'rabbitmq', 'rabbitmq_redis']
-
       services:
           redis:
               image: redis
@@ -107,28 +102,27 @@ jobs:
                   RABBITMQ_DEFAULT_PASS: guest
 
       steps:
-          -   name: Install apt packages
-              run: |
-                  sudo apt-get update && sudo apt-get install -f libcurl4-openssl-dev libssl-dev libgnutls28-dev httping expect libmemcached-dev
+          - name: Install apt packages
+            run: |
+                sudo apt-get update && sudo apt-get install -f libcurl4-openssl-dev libssl-dev libgnutls28-dev httping expect libmemcached-dev
 
-          -   uses: actions/checkout@v4
-          -   name: Set up Python ${{ matrix.python-version }}
-              uses: useblacksmith/setup-python@v6
-              with:
-                  python-version: ${{ matrix.python-version }}
-                  allow-prereleases: true
-                  cache: 'pip'
-                  cache-dependency-path: '**/setup.py'
-          -   name: Install tox
-              run: python -m pip install --upgrade pip 'tox' tox-gh-actions
-          -   name: >
-                  Run tox for
-                  "${{ matrix.python-version }}-integration-${{ matrix.toxenv }}"
-              timeout-minutes: 60
-              run: >
-                  tox --verbose --verbose -e
-                  "${{ matrix.python-version }}-integration-${{ matrix.toxenv }}" -vv
+          - uses: actions/checkout@v4
+          - name: Set up Python ${{ matrix.python-version }}
+            uses: useblacksmith/setup-python@v6
+            with:
+                python-version: ${{ matrix.python-version }}
+                allow-prereleases: true
+                cache: 'pip'
+                cache-dependency-path: '**/setup.py'
+          - name: Install tox
+            run: python -m pip install --upgrade pip 'tox' tox-gh-actions
+          - name: Run integration tests
+            timeout-minutes: 60
+            run: >
+                tox --verbose --verbose -e
+                "${{ matrix.python-version }}-integration-${{ matrix.toxenv }}" -vv
   Smoke:
+    # Smoke tests for specific functionality
     needs:
     - Unit
     if: needs.Unit.result == 'success'
@@ -159,7 +153,7 @@ jobs:
       - name: Install apt packages
         run: |
           sudo apt update
-          sudo apt-get install -y procps  # Install procps to enable sysctl
+          sudo apt-get install -y procps
           sudo sysctl -w vm.overcommit_memory=1
 
       - uses: actions/checkout@v4
@@ -174,7 +168,7 @@ jobs:
       - name: Install tox
         run: python -m pip install --upgrade pip tox tox-gh-actions
 
-      - name: Run tox for "${{ matrix.python-version }}-smoke-${{ matrix.test-case }}"
+      - name: Run smoke tests
         timeout-minutes: 60
         run: |
           tox --verbose --verbose -e "${{ matrix.python-version }}-smoke" -- -n auto -k ${{ matrix.test-case }}
