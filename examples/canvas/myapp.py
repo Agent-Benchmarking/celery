@@ -19,7 +19,6 @@ app.conf.update(
     result_serializer="json",
     enable_utc=True,
     task_track_started=True,
-    worker_prefetch_multiplier=1,
     pydantic=True,
 )
 

@@ -13,7 +13,7 @@ def generate_document_id():
 
 
 # Generate a list of sample document IDs
-DOCUMENT_IDS = [generate_document_id() for _ in range(5)]
+DOCUMENT_IDS = [generate_document_id() for _ in range(5000)]
 
 # Document categories
 CATEGORIES = ["INVOICE", "CONTRACT", "REPORT", "FORM", "LETTER"]
