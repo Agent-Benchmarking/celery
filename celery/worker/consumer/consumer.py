@@ -770,15 +770,49 @@ class Consumer:
         return conn
 
     def _flush_events(self):
+        """Flush any pending events from the event dispatcher.
+        
+        This method checks if an event dispatcher is present and, if so,
+        instructs it to flush any buffered events. This ensures that events
+        are sent to the event receiver(s) in a timely manner.
+        """
         if self.event_dispatcher:
             self.event_dispatcher.flush()
 
     def on_send_event_buffered(self):
+        """Callback called when an event is buffered.
+        
+        This method is called when an event is added to the event dispatcher's buffer.
+        If an event hub is available, it schedules the _flush_events method to be called
+        at the next opportunity, ensuring that buffered events are sent soon.
+        
+        This is used as a callback for the event dispatcher to ensure events are sent
+        in a timely manner even if the event dispatcher's buffer is not full.
+        """
         if self.hub:
             self.hub._ready.add(self._flush_events)
 
     def add_task_queue(self, queue, exchange=None, exchange_type=None,
                        routing_key=None, **options):
+        """Add a queue to the list of queues to consume from.
+        
+        This method adds a new queue to the consumer's list of queues to consume tasks from.
+        If the queue already exists in the application's queue registry, it uses that definition.
+        Otherwise, it creates a new queue with the provided parameters.
+        
+        Once the queue is added to the task consumer set, the consumer begins consuming
+        from it immediately.
+        
+        Arguments:
+            queue (str): The name of the queue to add.
+            exchange (str): The name of the exchange to bind the queue to. Defaults to
+                           the queue name if not specified.
+            exchange_type (str): The type of the exchange (e.g., 'direct', 'topic').
+                                Defaults to 'direct' if not specified.
+            routing_key (str): The routing key to use when binding the queue to the exchange.
+                              Defaults to None.
+            **options: Additional options to use when creating/adding the queue.
+        """
         cset = self.task_consumer
         queues = self.app.amqp.queues
         # Must use in' here, as __missing__ will automatically
@@ -800,17 +834,49 @@ class Consumer:
             info('Started consuming from %s', queue)
 
     def cancel_task_queue(self, queue):
+        """Stop consuming from a queue.
+        
+        This method cancels consumption from the specified queue. It removes the
+        queue from the application's queue registry and instructs the task consumer
+        to stop consuming from it.
+        
+        Arguments:
+            queue (str): The name of the queue to cancel consumption from.
+        """
         info('Canceling queue %s', queue)
         self.app.amqp.queues.deselect(queue)
         self.task_consumer.cancel_by_queue(queue)
 
     def apply_eta_task(self, task):
-        """Method called by the timer to apply a task with an ETA/countdown."""
+        """Method called by the timer to apply a task with an ETA/countdown.
+        
+        This method is called when a task with a specified ETA (estimated time of arrival)
+        or countdown is ready to be executed. It marks the task as reserved in the global
+        registry, passes it to the task handler, and adjusts the quality of service (QoS)
+        to allow more messages to be prefetched if needed.
+        
+        Arguments:
+            task (Request): The task request to apply.
+        """
         task_reserved(task)
         self.on_task_request(task)
         self.qos.decrement_eventually()
 
     def _message_report(self, body, message):
+        """Generate a debug report for a message.
+        
+        This method creates a formatted string containing detailed information about
+        a message received from the broker. This is primarily used for debugging and
+        logging purposes when handling problematic messages.
+        
+        Arguments:
+            body: The decoded message body.
+            message (kombu.Message): The message object containing metadata.
+            
+        Returns:
+            str: A formatted string containing details about the message including body,
+                content type, content encoding, delivery info, and headers.
+        """
         return MESSAGE_REPORT.format(dump_body(message, body),
                                      safe_repr(message.content_type),
                                      safe_repr(message.content_encoding),
@@ -818,11 +884,39 @@ class Consumer:
                                      safe_repr(message.headers))
 
     def on_unknown_message(self, body, message):
+        """Handler for messages with unknown format.
+        
+        This method is called when a message is received that cannot be properly
+        decoded or doesn't conform to the expected message format. It logs a warning
+        with details about the message, rejects the message, and sends a task_rejected
+        signal.
+        
+        Arguments:
+            body: The decoded message body (may be partially decoded or corrupt).
+            message (kombu.Message): The message object containing metadata.
+        """
         warn(UNKNOWN_FORMAT, self._message_report(body, message))
         message.reject_log_error(logger, self.connection_errors)
         signals.task_rejected.send(sender=self, message=message, exc=None)
 
     def on_unknown_task(self, body, message, exc):
+        """Handler for messages referring to unknown tasks.
+        
+        This method is called when a message is received for a task that is not
+        registered in the worker. It logs an error with details about the message,
+        rejects the message, marks the task as failed in the result backend, and
+        sends appropriate events and signals.
+        
+        The method attempts to extract task identification information from the message
+        headers or payload (for protocol version 1), constructs a minimal request object,
+        and uses it to record the failure with a NotRegistered exception.
+        
+        Arguments:
+            body: The decoded message body.
+            message (kombu.Message): The message object containing metadata.
+            exc (Exception): The exception that led to this handler being called,
+                            typically a NotRegistered exception.
+        """
         error(UNKNOWN_TASK_ERROR,
               exc,
               dump_body(message, body),
@@ -856,12 +950,39 @@ class Consumer:
         )
 
     def on_invalid_task(self, body, message, exc):
+        """Handler for malformed task messages.
+        
+        This method is called when a message is received that cannot be properly
+        processed as a task due to missing or invalid fields or other issues with the
+        message structure. It logs an error with details about the message and the
+        exception, rejects the message, and sends a task_rejected signal.
+        
+        Unlike on_unknown_task which handles known message formats for tasks that don't
+        exist, this method handles messages that cannot be properly interpreted as tasks
+        at all.
+        
+        Arguments:
+            body: The decoded message body (may be malformed).
+            message (kombu.Message): The message object containing metadata.
+            exc (Exception): The exception that led to this handler being called.
+        """
         error(INVALID_TASK_ERROR, exc, dump_body(message, body),
               exc_info=True)
         message.reject_log_error(logger, self.connection_errors)
         signals.task_rejected.send(sender=self, message=message, exc=exc)
 
     def update_strategies(self):
+        """Update task execution strategies.
+        
+        This method builds or rebuilds the task execution strategies for all tasks
+        registered in the application. It iterates through the app's task registry
+        and creates both a strategy and tracer for each task.
+        
+        The strategy determines how the task is executed, while the tracer handles
+        the tracing of task execution (e.g., recording events, error handling).
+        
+        This is typically called when new tasks are registered or the worker is started.
+        """
         loader = self.app.loader
         for name, task in self.app.tasks.items():
             self.strategies[name] = task.start_strategy(self.app, self)
@@ -869,6 +990,22 @@ class Consumer:
                                           app=self.app)
 
     def create_task_handler(self, promise=promise):
+        """Create a function to handle received task messages.
+        
+        This method creates and returns a closure function that handles incoming task
+        messages from the broker. The handler is responsible for decoding the message,
+        identifying the task, and routing it to the appropriate execution strategy.
+        
+        The handler captures references to various methods and objects to avoid
+        attribute lookups during message processing, which improves performance.
+        
+        Arguments:
+            promise (callable): A function that takes a callback and arguments and
+                              returns a promise. Defaults to the 'promise' function.
+                              
+        Returns:
+            callable: A function that takes a message object and processes it as a task.
+        """
         strategies = self.strategies
         on_unknown_message = self.on_unknown_message
         on_unknown_task = self.on_unknown_task
