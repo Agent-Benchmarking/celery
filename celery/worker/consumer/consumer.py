@@ -238,6 +238,20 @@ class Consumer:
         self.blueprint.apply(self, **dict(worker_options or {}, **kwargs))
 
     def call_soon(self, p, *args, **kwargs):
+        """Schedule a function to be called soon.
+        
+        This method schedules a function to be called soon, either by using 
+        the event hub (if available) or by appending to a list of pending
+        operations to be executed later.
+        
+        Arguments:
+            p (Callable): The function to call.
+            *args: Positional arguments to pass to the function.
+            **kwargs: Keyword arguments to pass to the function.
+            
+        Returns:
+            Any: A promise or partial function object that will be called later.
+        """
         p = ppartial(p, *args, **kwargs)
         if self.hub:
             return self.hub.call_soon(p)
@@ -245,6 +259,16 @@ class Consumer:
         return p
 
     def perform_pending_operations(self):
+        """Execute all pending operations.
+        
+        If the hub is not being used, this method executes all pending operations
+        that were scheduled via call_soon(). Operations are executed in reverse order
+        (LIFO) and any exceptions raised are logged but don't stop execution of 
+        subsequent operations.
+        
+        This is typically called just before shutdown to ensure all pending 
+        operations are completed.
+        """
         if not self.hub:
             while self._pending_operations:
                 try:
@@ -253,10 +277,32 @@ class Consumer:
                     logger.exception('Pending callback raised: %r', exc)
 
     def bucket_for_task(self, type):
+        """Create a token bucket for rate limiting a task type.
+        
+        This method creates a token bucket for a specific task type if that
+        task has a rate limit defined. The token bucket is used to control
+        how many tasks of this type can be processed within a given time period.
+        
+        Arguments:
+            type (Task): The task type to create a bucket for.
+            
+        Returns:
+            TokenBucket: A token bucket for rate limiting, or None if rate limiting
+                         is not needed for this task.
+        """
         limit = rate(getattr(type, 'rate_limit', None))
         return TokenBucket(limit, capacity=1) if limit else None
 
     def reset_rate_limits(self):
+        """Reset rate limits for all registered tasks.
+        
+        This method creates or updates token buckets for all registered tasks in the application.
+        It iterates through all tasks and creates appropriate rate limiting buckets for each task
+        based on their individual rate limit settings.
+        
+        This is called during initialization and should be called whenever tasks are added or removed,
+        or when their rate limit settings change.
+        """
         self.task_buckets.update(
             (n, self.bucket_for_task(t)) for n, t in self.app.tasks.items()
         )
@@ -286,10 +332,31 @@ class Consumer:
             abs(index) * self.prefetch_multiplier)
 
     def _limit_move_to_pool(self, request):
+        """Move a task request to the worker pool for execution.
+        
+        This is called when a rate-limited task is finally ready to be executed.
+        It marks the task as reserved in the worker state and passes the task
+        to the worker pool for actual execution.
+        
+        Arguments:
+            request (Request): The task request to execute.
+        """
         task_reserved(request)
         self.on_task_request(request)
 
     def _schedule_bucket_request(self, bucket):
+        """Schedule and process rate-limited task requests from a bucket.
+        
+        This method attempts to process all task requests in a rate-limiting bucket.
+        It processes as many tasks as possible based on available tokens, and if
+        the bucket runs out of tokens, it schedules itself to be called again later
+        when more tokens should be available.
+        
+        This implements the rate limiting mechanism for tasks that have rate limits set.
+        
+        Arguments:
+            bucket (TokenBucket): The rate-limiting bucket to process requests from.
+        """
         while True:
             try:
                 request, tokens = bucket.pop()
@@ -314,15 +381,60 @@ class Consumer:
                 break
 
     def _limit_task(self, request, bucket, tokens):
+        """Add a task request to a rate limiting bucket and schedule processing.
+        
+        This method adds a task request to a rate limiting bucket and then
+        attempts to process tasks from that bucket immediately. This is used
+        to handle tasks that have rate limits defined.
+        
+        Arguments:
+            request (Request): The task request to be rate-limited.
+            bucket (TokenBucket): The rate limiting bucket for this task type.
+            tokens (int): Number of tokens this task requires from the bucket.
+            
+        Returns:
+            Any: The result of attempting to schedule the bucket's requests.
+        """
         bucket.add((request, tokens))
         return self._schedule_bucket_request(bucket)
 
     def _limit_post_eta(self, request, bucket, tokens):
+        """Handle rate-limited tasks that were scheduled with an ETA.
+        
+        This method is similar to _limit_task but with an additional step to
+        decrement the QoS prefetch count. This is used for tasks that were
+        scheduled with an ETA or countdown and are now ready to be executed
+        but need to be rate-limited.
+        
+        Arguments:
+            request (Request): The task request with an expired ETA.
+            bucket (TokenBucket): The rate limiting bucket for this task type.
+            tokens (int): Number of tokens this task requires from the bucket.
+            
+        Returns:
+            Any: The result of attempting to schedule the bucket's requests.
+        """
         self.qos.decrement_eventually()
         bucket.add((request, tokens))
         return self._schedule_bucket_request(bucket)
 
     def start(self):
+        """Start the consumer blueprint.
+        
+        This method starts the consumer blueprint and handles any recoverable errors
+        that might occur during startup or while running. It implements the reconnection
+        and restart logic for the consumer when connection errors occur.
+        
+        The method will continue to restart the blueprint while handling errors until
+        one of the STOP_CONDITIONS is met (CLOSE or TERMINATE).
+        
+        It manages connection retry policies based on configuration settings and
+        implements exponential backoff for frequent restart conditions.
+        
+        Raises:
+            WorkerShutdown: If connection retry is disabled and a connection error occurs.
+            WorkerTerminate: If too many open files error occurs.
+        """
         blueprint = self.blueprint
         while blueprint.state not in STOP_CONDITIONS:
             maybe_shutdown()
@@ -366,16 +478,54 @@ class Consumer:
                     blueprint.restart(self)
 
     def _get_connection_retry_type(self, is_connection_loss_on_startup):
+        """Determine which connection retry setting to use.
+        
+        This method determines which configuration setting should be used for
+        connection retry behavior based on whether the connection loss happened
+        during startup or while already running.
+        
+        Arguments:
+            is_connection_loss_on_startup (bool): Whether the connection loss occurred
+                during the initial startup process.
+                
+        Returns:
+            str: The configuration setting name to use - either 'broker_connection_retry_on_startup'
+                 for startup connection issues (if that setting is defined) or 'broker_connection_retry'
+                 for runtime connection issues or if the startup setting is not defined.
+        """
         return ('broker_connection_retry_on_startup'
                 if (is_connection_loss_on_startup
                     and self.app.conf.broker_connection_retry_on_startup is not None)
                 else 'broker_connection_retry')
 
     def on_connection_error_before_connected(self, exc):
+        """Handle connection errors that occur before establishing a connection.
+        
+        This method is called when a connection error occurs while trying to establish
+        the initial connection to the broker. It logs detailed information about the
+        connection error to help with troubleshooting.
+        
+        Arguments:
+            exc (Exception): The connection exception that was raised.
+        """
         error(CONNECTION_ERROR, self.conninfo.as_uri(), exc,
               'Trying to reconnect...')
 
     def on_connection_error_after_connected(self, exc):
+        """Handle connection errors that occur after a connection was established.
+        
+        This method is called when a connection error occurs after the worker had
+        successfully connected to the broker. It handles cleanup of the broken connection
+        and prepares for reconnection.
+        
+        The method also handles cancellation of running tasks based on the
+        worker_cancel_long_running_tasks_on_connection_loss configuration setting,
+        and adjusts the prefetch count if worker_enable_prefetch_count_reduction is enabled
+        to avoid over-fetching messages upon reconnection.
+        
+        Arguments:
+            exc (Exception): The connection exception that was raised.
+        """
         warn(CONNECTION_RETRY, exc_info=True)
         try:
             self.connection.collect()
@@ -407,24 +557,68 @@ class Consumer:
                 )
 
     def register_with_event_loop(self, hub):
+        """Register all consumer components with the event loop.
+        
+        This method registers all the components in the consumer blueprint with
+        the provided event loop hub. This allows each component to set up any
+        necessary callbacks or handlers with the event loop.
+        
+        Arguments:
+            hub (kombu.asynchronous.Hub): The event loop hub to register with.
+        """
         self.blueprint.send_all(
             self, 'register_with_event_loop', args=(hub,),
             description='Hub.register',
         )
 
     def shutdown(self):
+        """Shutdown the consumer.
+        
+        This method performs an orderly shutdown of the consumer. It first ensures that
+        all pending operations are executed, and then shuts down all components in the blueprint.
+        
+        This is typically called when the worker is gracefully shutting down.
+        """
         self.perform_pending_operations()
         self.blueprint.shutdown(self)
 
     def stop(self):
+        """Stop the consumer.
+        
+        This method stops all components in the consumer blueprint. Unlike shutdown,
+        it does not execute pending operations before stopping.
+        
+        This is typically called when the worker is abruptly stopping or when
+        a component needs to be restarted.
+        """
         self.blueprint.stop(self)
 
     def on_ready(self):
+        """Callback triggered when the consumer is ready to receive tasks.
+        
+        This method is called when the consumer is fully initialized and ready to
+        start processing tasks. It executes and then removes the init_callback,
+        which can be used by the worker to perform additional setup steps once
+        the consumer is ready.
+        
+        The callback is executed only once - the first time the consumer is ready.
+        """
         callback, self.init_callback = self.init_callback, None
         if callback:
             callback(self)
 
     def loop_args(self):
+        """Get the arguments needed for the event loop.
+        
+        This method returns a tuple of arguments that are passed to the event loop
+        when it starts. These arguments provide all the necessary context and objects
+        needed for the event loop to function properly.
+        
+        Returns:
+            tuple: A tuple containing (self, connection, task_consumer, blueprint, hub, qos,
+                  amqheartbeat, clock, amqheartbeat_rate) - all the components
+                  needed by the event loop.
+        """
         return (self, self.connection, self.task_consumer,
                 self.blueprint, self.hub, self.qos, self.amqheartbeat,
                 self.app.clock, self.amqheartbeat_rate)
@@ -446,6 +640,22 @@ class Consumer:
         message.ack()
 
     def on_close(self):
+        """Clean up resources when the consumer connection is closed.
+        
+        This method is called when the consumer connection to the broker is closed,
+        either deliberately or due to a connection error. It performs cleanup operations
+        to ensure that resources are properly released and that the internal state is reset.
+        
+        The cleanup includes:
+        1. Clearing controller semaphores if present
+        2. Clearing any pending timer tasks
+        3. Clearing any pending rate-limited tasks in buckets
+        4. Removing any reserved tasks from the global request registry
+        5. Flushing the worker pool if supported
+        
+        This ensures that when a new connection is established, the consumer starts with
+        a clean state and without any leftover tasks or resources.
+        """
         # Clear internal queues to get rid of old messages.
         # They can't be acked anyway, as a delivery tag is specific
         # to the current channel.
@@ -466,8 +676,19 @@ class Consumer:
     def connect(self):
         """Establish the broker connection used for consuming tasks.
 
+        This method creates and returns a connection to the message broker that will
+        be used for consuming tasks. It also registers the connection with the event loop
+        if an event hub is being used.
+        
+        The connection will have the configured heartbeat setting applied and will
+        use the connection_for_read method which configures the connection specifically
+        for consuming (reading) messages.
+        
         Retries establishing the connection if the
-        :setting:`broker_connection_retry` setting is enabled
+        :setting:`broker_connection_retry` setting is enabled.
+        
+        Returns:
+            kombu.Connection: An established connection to the message broker.
         """
         conn = self.connection_for_read(heartbeat=self.amqheartbeat)
         if self.hub:
@@ -475,6 +696,20 @@ class Consumer:
         return conn
 
     def connection_for_read(self, heartbeat=None):
+        """Create a connection to the broker optimized for consuming (reading) messages.
+        
+        This method creates a connection specifically configured for consuming messages
+        from the broker. It applies the specified heartbeat setting and ensures the
+        connection is established by wrapping it with ensure_connected.
+        
+        Arguments:
+            heartbeat (float): Optional heartbeat interval in seconds. If not specified,
+                              the default value from configuration will be used.
+                              
+        Returns:
+            kombu.Connection: An established connection to the message broker
+                             configured for consuming messages.
+        """
         return self.ensure_connected(
             self.app.connection_for_read(heartbeat=heartbeat))
 
@@ -535,15 +770,49 @@ class Consumer:
         return conn
 
     def _flush_events(self):
+        """Flush any pending events from the event dispatcher.
+        
+        This method checks if an event dispatcher is present and, if so,
+        instructs it to flush any buffered events. This ensures that events
+        are sent to the event receiver(s) in a timely manner.
+        """
         if self.event_dispatcher:
             self.event_dispatcher.flush()
 
     def on_send_event_buffered(self):
+        """Callback called when an event is buffered.
+        
+        This method is called when an event is added to the event dispatcher's buffer.
+        If an event hub is available, it schedules the _flush_events method to be called
+        at the next opportunity, ensuring that buffered events are sent soon.
+        
+        This is used as a callback for the event dispatcher to ensure events are sent
+        in a timely manner even if the event dispatcher's buffer is not full.
+        """
         if self.hub:
             self.hub._ready.add(self._flush_events)
 
     def add_task_queue(self, queue, exchange=None, exchange_type=None,
                        routing_key=None, **options):
+        """Add a queue to the list of queues to consume from.
+        
+        This method adds a new queue to the consumer's list of queues to consume tasks from.
+        If the queue already exists in the application's queue registry, it uses that definition.
+        Otherwise, it creates a new queue with the provided parameters.
+        
+        Once the queue is added to the task consumer set, the consumer begins consuming
+        from it immediately.
+        
+        Arguments:
+            queue (str): The name of the queue to add.
+            exchange (str): The name of the exchange to bind the queue to. Defaults to
+                           the queue name if not specified.
+            exchange_type (str): The type of the exchange (e.g., 'direct', 'topic').
+                                Defaults to 'direct' if not specified.
+            routing_key (str): The routing key to use when binding the queue to the exchange.
+                              Defaults to None.
+            **options: Additional options to use when creating/adding the queue.
+        """
         cset = self.task_consumer
         queues = self.app.amqp.queues
         # Must use in' here, as __missing__ will automatically
@@ -565,17 +834,49 @@ class Consumer:
             info('Started consuming from %s', queue)
 
     def cancel_task_queue(self, queue):
+        """Stop consuming from a queue.
+        
+        This method cancels consumption from the specified queue. It removes the
+        queue from the application's queue registry and instructs the task consumer
+        to stop consuming from it.
+        
+        Arguments:
+            queue (str): The name of the queue to cancel consumption from.
+        """
         info('Canceling queue %s', queue)
         self.app.amqp.queues.deselect(queue)
         self.task_consumer.cancel_by_queue(queue)
 
     def apply_eta_task(self, task):
-        """Method called by the timer to apply a task with an ETA/countdown."""
+        """Method called by the timer to apply a task with an ETA/countdown.
+        
+        This method is called when a task with a specified ETA (estimated time of arrival)
+        or countdown is ready to be executed. It marks the task as reserved in the global
+        registry, passes it to the task handler, and adjusts the quality of service (QoS)
+        to allow more messages to be prefetched if needed.
+        
+        Arguments:
+            task (Request): The task request to apply.
+        """
         task_reserved(task)
         self.on_task_request(task)
         self.qos.decrement_eventually()
 
     def _message_report(self, body, message):
+        """Generate a debug report for a message.
+        
+        This method creates a formatted string containing detailed information about
+        a message received from the broker. This is primarily used for debugging and
+        logging purposes when handling problematic messages.
+        
+        Arguments:
+            body: The decoded message body.
+            message (kombu.Message): The message object containing metadata.
+            
+        Returns:
+            str: A formatted string containing details about the message including body,
+                content type, content encoding, delivery info, and headers.
+        """
         return MESSAGE_REPORT.format(dump_body(message, body),
                                      safe_repr(message.content_type),
                                      safe_repr(message.content_encoding),
@@ -583,11 +884,39 @@ class Consumer:
                                      safe_repr(message.headers))
 
     def on_unknown_message(self, body, message):
+        """Handler for messages with unknown format.
+        
+        This method is called when a message is received that cannot be properly
+        decoded or doesn't conform to the expected message format. It logs a warning
+        with details about the message, rejects the message, and sends a task_rejected
+        signal.
+        
+        Arguments:
+            body: The decoded message body (may be partially decoded or corrupt).
+            message (kombu.Message): The message object containing metadata.
+        """
         warn(UNKNOWN_FORMAT, self._message_report(body, message))
         message.reject_log_error(logger, self.connection_errors)
         signals.task_rejected.send(sender=self, message=message, exc=None)
 
     def on_unknown_task(self, body, message, exc):
+        """Handler for messages referring to unknown tasks.
+        
+        This method is called when a message is received for a task that is not
+        registered in the worker. It logs an error with details about the message,
+        rejects the message, marks the task as failed in the result backend, and
+        sends appropriate events and signals.
+        
+        The method attempts to extract task identification information from the message
+        headers or payload (for protocol version 1), constructs a minimal request object,
+        and uses it to record the failure with a NotRegistered exception.
+        
+        Arguments:
+            body: The decoded message body.
+            message (kombu.Message): The message object containing metadata.
+            exc (Exception): The exception that led to this handler being called,
+                            typically a NotRegistered exception.
+        """
         error(UNKNOWN_TASK_ERROR,
               exc,
               dump_body(message, body),
@@ -621,12 +950,39 @@ class Consumer:
         )
 
     def on_invalid_task(self, body, message, exc):
+        """Handler for malformed task messages.
+        
+        This method is called when a message is received that cannot be properly
+        processed as a task due to missing or invalid fields or other issues with the
+        message structure. It logs an error with details about the message and the
+        exception, rejects the message, and sends a task_rejected signal.
+        
+        Unlike on_unknown_task which handles known message formats for tasks that don't
+        exist, this method handles messages that cannot be properly interpreted as tasks
+        at all.
+        
+        Arguments:
+            body: The decoded message body (may be malformed).
+            message (kombu.Message): The message object containing metadata.
+            exc (Exception): The exception that led to this handler being called.
+        """
         error(INVALID_TASK_ERROR, exc, dump_body(message, body),
               exc_info=True)
         message.reject_log_error(logger, self.connection_errors)
         signals.task_rejected.send(sender=self, message=message, exc=exc)
 
     def update_strategies(self):
+        """Update task execution strategies.
+        
+        This method builds or rebuilds the task execution strategies for all tasks
+        registered in the application. It iterates through the app's task registry
+        and creates both a strategy and tracer for each task.
+        
+        The strategy determines how the task is executed, while the tracer handles
+        the tracing of task execution (e.g., recording events, error handling).
+        
+        This is typically called when new tasks are registered or the worker is started.
+        """
         loader = self.app.loader
         for name, task in self.app.tasks.items():
             self.strategies[name] = task.start_strategy(self.app, self)
@@ -634,6 +990,22 @@ class Consumer:
                                           app=self.app)
 
     def create_task_handler(self, promise=promise):
+        """Create a function to handle received task messages.
+        
+        This method creates and returns a closure function that handles incoming task
+        messages from the broker. The handler is responsible for decoding the message,
+        identifying the task, and routing it to the appropriate execution strategy.
+        
+        The handler captures references to various methods and objects to avoid
+        attribute lookups during message processing, which improves performance.
+        
+        Arguments:
+            promise (callable): A function that takes a callback and arguments and
+                              returns a promise. Defaults to the 'promise' function.
+                              
+        Returns:
+            callable: A function that takes a message object and processes it as a task.
+        """
         strategies = self.strategies
         on_unknown_message = self.on_unknown_message
         on_unknown_task = self.on_unknown_task
