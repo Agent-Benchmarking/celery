@@ -87,23 +87,3 @@ class DelayedDelivery(bootsteps.StartStopStep):
                     "Failed to set up delayed delivery for broker: %s. Error: %r",
                     broker_url, exc
                 )
-
-    def stop(self, c: Consumer) -> None:
-        """Stop the delayed delivery service.
-
-        Currently a no-op as there's no persistent state to clean up.
-
-        Args:
-            c: The consumer instance.
-        """
-        pass
-
-    def shutdown(self, c: Consumer) -> None:
-        """Shutdown the delayed delivery service.
-
-        Currently identical to stop() as there's no additional cleanup needed.
-
-        Args:
-            c: The consumer instance.
-        """
-        self.stop(c)
