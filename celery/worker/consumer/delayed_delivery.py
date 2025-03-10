@@ -40,7 +40,10 @@ class DelayedDelivery(bootsteps.StartStopStep):
         Returns:
             bool: True if quorum queues are detected, False otherwise.
         """
-        return detect_quorum_queues(c.app, c.app.connection_for_write().transport.driver_type)[0]
+        try:
+            return detect_quorum_queues(c.app, c.app.connection_for_write().transport.driver_type)[0]
+        except (ConnectionRefusedError, ValueError):
+            return False
 
     def _setup_delayed_delivery(self, connection: Connection, app: Celery) -> None:
         """Set up delayed delivery exchanges and bindings for a single connection.
@@ -51,6 +54,7 @@ class DelayedDelivery(bootsteps.StartStopStep):
 
         Raises:
             ConnectionRefusedError: If the connection to the broker fails.
+            ValueError: If the broker URL is invalid.
         """
         logger.debug("Setting up delayed delivery exchanges and queues")
         declare_native_delayed_delivery_exchanges_and_queues(
@@ -78,7 +82,7 @@ class DelayedDelivery(bootsteps.StartStopStep):
                 connection = c.app.connection_for_write(url=broker_url)
                 self._setup_delayed_delivery(connection, c.app)
                 logger.info(f"Successfully set up delayed delivery for broker: {broker_url}")
-            except ConnectionRefusedError as exc:
+            except (ConnectionRefusedError, ValueError) as exc:
                 logger.warning(
                     "Failed to set up delayed delivery for broker: %s. Error: %r",
                     broker_url, exc
