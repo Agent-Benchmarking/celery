@@ -26,6 +26,11 @@ on:
       - "tox.ini"
   workflow_dispatch:  # Allow manual triggering
 
+# Prevent concurrent runs of the same workflow on the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
 # Define permissions needed for the workflow
 permissions:
   contents: read  # to fetch code (actions/checkout)
