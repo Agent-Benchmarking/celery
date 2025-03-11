@@ -205,8 +205,10 @@ jobs:
 
     # Define services needed for integration tests
     services:
+      # Redis service container for cache and message broker testing
       redis:
-        image: redis:latest
+        # Use specific version instead of latest for stability
+        image: redis:7.2.3-alpine
         ports:
           - 6379:6379
         options: >-
@@ -214,18 +216,24 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+          --health-start-period 30s
+      
+      # RabbitMQ service container for message broker testing
       rabbitmq:
-        image: rabbitmq:latest
+        # Use specific version with management plugin for better monitoring
+        image: rabbitmq:3.12.12-management-alpine
         ports:
-          - 5672:5672
+          - 5672:5672    # AMQP protocol port
+          - 15672:15672  # Management UI port
         env:
           RABBITMQ_DEFAULT_USER: guest
           RABBITMQ_DEFAULT_PASS: guest
         options: >-
-          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-cmd "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+          --health-start-period 40s
 
     steps:
       # Install required system packages
@@ -287,8 +295,9 @@ jobs:
       # Fetch Docker images needed for tests
       - name: Fetch Docker Images
         run: |
-          docker pull redis:latest
-          docker pull rabbitmq:latest
+          # Use specific versions instead of latest for reproducible tests
+          docker pull redis:7.2.3-alpine
+          docker pull rabbitmq:3.12.12-management-alpine
       
       # Configure system settings
       - name: Configure system settings
