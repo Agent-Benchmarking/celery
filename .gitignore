@@ -38,3 +38,6 @@ integration-tests-config.json
 statefilename.*
 dump.rdb
 .env
+
+# ETL example outputs
+etl_output_*.json
