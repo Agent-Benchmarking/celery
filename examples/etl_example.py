@@ -13,8 +13,10 @@ to build a data processing workflow that:
 Key Celery Features Demonstrated:
 - Parallel task execution using `group`
 - Task chaining using the `|` operator
+- Immutable signatures using `si()`
+- Error handling with callbacks
 - Result passing between tasks
-- Error handling and logging
+- Task ID inheritance (Celery 5.4+)
 
 Pipeline Flow:
     [extract(source_a), extract(source_b), extract(source_c)] (in parallel)
@@ -47,12 +49,11 @@ merge the results, apply transformations (adding computed fields and filtering),
 and save the final results to a timestamped JSON file.
 """
 
-from celery import Celery
-from celery import group
+from celery import Celery, group, chain
 import json
 import random
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Any, Optional
 
 # Initialize Celery app
 app = Celery('etl_example')
@@ -65,7 +66,7 @@ app.conf.update(
 DATA_SOURCES = ['source_a', 'source_b', 'source_c']
 
 @app.task(name='etl.extract')
-def extract(source: str) -> List[Dict]:
+def extract(source: str) -> List[Dict[str, Any]]:
     """
     Extract data from a simulated source.
     In a real application, this could be a database, API, or file.
@@ -91,7 +92,7 @@ def extract(source: str) -> List[Dict]:
     return records
 
 @app.task(name='etl.transform')
-def transform(data: List[Dict]) -> List[Dict]:
+def transform(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Transform the extracted data.
     This example adds some computed fields and filters data.
@@ -113,7 +114,7 @@ def transform(data: List[Dict]) -> List[Dict]:
     return transformed_data
 
 @app.task(name='etl.merge_data')
-def merge_data(results: List[List[Dict]]) -> List[Dict]:
+def merge_data(results: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     """
     Merge data from multiple sources into a single list.
     """
@@ -125,7 +126,7 @@ def merge_data(results: List[List[Dict]]) -> List[Dict]:
     return merged
 
 @app.task(name='etl.load')
-def load(data: List[Dict]) -> str:
+def load(data: List[Dict[str, Any]]) -> str:
     """
     Load the transformed data into a destination.
     In this example, we'll just save to a JSON file.
@@ -138,9 +139,26 @@ def load(data: List[Dict]) -> str:
     print(f'Loaded {len(data)} records to {output_file}')
     return f'Data successfully loaded to {output_file}'
 
+@app.task(name='etl.handle_error')
+def handle_error(request, exc, traceback):
+    """
+    Error callback that logs failed task information.
+    """
+    error_file = f'etl_error_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    with open(error_file, 'w') as f:
+        print(f'Task {request.id} failed: {exc}\\n{traceback}', file=f)
+    return f'Error logged to {error_file}'
+
 def build_etl_pipeline():
     """
     Build and execute the ETL pipeline using Celery canvas features.
+    
+    The pipeline demonstrates several Celery canvas features:
+    1. Group for parallel execution
+    2. Chain for sequential steps
+    3. Immutable signatures for transform and load
+    4. Error callbacks for failure handling
+    5. Task ID inheritance for the final load task
     """
     # Extract data from multiple sources in parallel
     extraction_tasks = [extract.s(source) for source in DATA_SOURCES]
@@ -149,14 +167,14 @@ def build_etl_pipeline():
     # Build the pipeline:
     # 1. Extract data from all sources (group)
     # 2. Merge the results
-    # 3. Transform the merged data
-    # 4. Load the final results
+    # 3. Transform the merged data (immutable)
+    # 4. Load the final results (immutable)
     pipeline = (
         extraction_group |
         merge_data.s() |
-        transform.s() |
-        load.s()
-    )
+        transform.si() |  # Make transform immutable
+        load.si()  # Make load immutable
+    ).on_error(handle_error.s())  # Add error handling
     
     return pipeline
 
@@ -166,4 +184,4 @@ if __name__ == '__main__':
     result = pipeline.apply_async()
     
     print("Pipeline started! You can track the progress using the Celery worker logs.")
-    print(f"Pipeline ID: {result.id}") 
+    print(f"Pipeline ID: {result.id}")  # This will be the ID of the final load task 
