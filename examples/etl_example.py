@@ -166,6 +166,36 @@ def handle_error(request, exc, traceback):
     return f"Error logged to {error_file}"
 
 
+@app.task(name="etl.transform_batch")
+def transform_batch(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Transform a batch of records by applying the transform function to each.
+    Returns only the non-None results (records with even values).
+    """
+    transformed = []
+    for record in records:
+        result = transform(record)
+        if result is not None:
+            transformed.append(result)
+    
+    print(f"Transformed batch: kept {len(transformed)} out of {len(records)} records")
+    return transformed
+
+
+@app.task(name="etl.chunk_processor")
+def chunk_processor(records: List[Dict[str, Any]]) -> List[str]:
+    """
+    Process a list of records in chunks.
+    Returns the list of output files created.
+    """
+    output_files = []
+    for i, chunk_start in enumerate(range(0, len(records), CHUNK_SIZE)):
+        chunk = records[chunk_start:chunk_start + CHUNK_SIZE]
+        output_file = load_chunk(chunk, i)
+        output_files.append(output_file)
+    return output_files
+
+
 def build_etl_pipeline():
     """
     Build and execute the ETL pipeline using Celery canvas features.
@@ -173,10 +203,9 @@ def build_etl_pipeline():
     The pipeline demonstrates several Celery canvas features:
     1. Group for parallel extraction
     2. Chain for sequential steps
-    3. Map for record-level transformation
-    4. Chunks for memory-efficient loading
-    5. Error callbacks for failure handling
-    6. Task ID inheritance for the final tasks
+    3. Memory-efficient chunk processing
+    4. Error callbacks for failure handling
+    5. Task ID inheritance for the final tasks
     """
     # Extract data from multiple sources in parallel
     extraction_tasks = [extract.s(source) for source in DATA_SOURCES]
@@ -184,25 +213,49 @@ def build_etl_pipeline():
 
     # Build the pipeline:
     # 1. Extract data from all sources (group)
-    # 2. Merge the results
-    # 3. Transform each record individually (map)
-    # 4. Filter out None values
-    # 5. Load the results in chunks
+    # 2. Merge the results into a single list
+    # 3. Transform records in batches
+    # 4. Process and load in chunks
     pipeline = (
         extraction_group
         | merge_data.s()
-        | transform.map()  # Process each record individually
-        | filter_none.s()
-        | chunks.s(CHUNK_SIZE)(load_chunk.s())  # Process in chunks
+        | transform_batch.s()
+        | chunk_processor.s()
     ).on_error(handle_error.s())  # Add error handling
 
     return pipeline
 
 
 if __name__ == "__main__":
+    """
+    Expected Output:
+    1. Console output will show:
+       - Number of records extracted from each source
+       - Total records after merging
+       - Number of valid records after filtering
+       - Information about each chunk saved
+    
+    2. Generated files:
+       - Multiple JSON files named 'etl_output_YYYYMMDD_HHMMSS_chunk_N.json'
+         where N is the chunk number
+       - Each JSON file contains a list of records with structure:
+         {
+             "id": "source_X_N",
+             "timestamp": "ISO-8601 timestamp",
+             "value": integer,
+             "source": "source_X",
+             "value_squared": integer,
+             "is_high_value": boolean,
+             "processed_at": "ISO-8601 timestamp"
+         }
+       - Only records with even values are included
+    
+    3. In case of errors:
+       - Error files named 'etl_error_YYYYMMDD_HHMMSS.log' will be created
+    """
     # Build and execute the pipeline
     pipeline = build_etl_pipeline()
     result = pipeline.apply_async()
-
+    
     print("Pipeline started! You can track the progress using the Celery worker logs.")
     print(f"Pipeline ID: {result.id}")  # This will be the ID of the final task
