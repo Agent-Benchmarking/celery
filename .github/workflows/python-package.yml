@@ -161,14 +161,27 @@ jobs:
         run: |
           tox --verbose --verbose
       
-      # Upload coverage to Codecov
+      # Upload coverage to Codecov (only when token is available)
       - name: Upload coverage to Codecov
+        if: ${{ secrets.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           flags: unittests
-          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
+      
+      # Add warning to job summary when Codecov token is missing
+      - name: Add Codecov warning to summary
+        if: ${{ secrets.CODECOV_TOKEN == '' }}
+        run: |
+          echo "⚠️ **Warning:** CODECOV_TOKEN is not set. Code coverage was not uploaded to Codecov." >> $GITHUB_STEP_SUMMARY
+          echo "This is expected for external contributors and does not indicate a test failure." >> $GITHUB_STEP_SUMMARY
+
+      # Add job summary
+      - name: Job summary
+        run: |
+          echo "## Unit Tests Summary" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Completed unit tests for Python ${{ matrix.python-version }} on ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
 
   # Integration tests job
   integration-tests:
