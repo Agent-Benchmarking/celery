@@ -1,5 +1,5 @@
-# This workflow runs Python tests, linting, and documentation checks for the Celery project
-# It includes unit tests, integration tests with Redis and RabbitMQ, smoke tests, linting, and documentation validation
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
 
 name: Celery CI
 
@@ -21,11 +21,6 @@ on:
       - '.github/workflows/python-package.yml'
       - "tox.ini"
   workflow_dispatch:  # Allow manual triggering
-
-# Prevent concurrent runs of the same workflow on the same branch/PR
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: true
 
 # Define permissions needed for the workflow
 permissions:
@@ -114,12 +109,10 @@ jobs:
         python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
         toxenv: ['redis', 'rabbitmq', 'rabbitmq_redis']
 
-    # Service containers required for integration testing
+    # Define services needed for integration tests
     services:
-      # Redis service container for cache and message broker testing
       redis:
-        # Use specific version instead of latest for stability
-        image: redis:7.2.3-alpine
+        image: redis:latest
         ports:
           - 6379:6379
         options: >-
@@ -127,24 +120,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-          --health-start-period 30s
-      
-      # RabbitMQ service container for message broker testing
       rabbitmq:
-        # Use specific version with management plugin for better monitoring
-        image: rabbitmq:3.12.12-management-alpine
+        image: rabbitmq:latest
         ports:
-          - 5672:5672    # AMQP protocol port
-          - 15672:15672  # Management UI port
+          - 5672:5672
         env:
           RABBITMQ_DEFAULT_USER: guest
           RABBITMQ_DEFAULT_PASS: guest
         options: >-
-          --health-cmd "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"
+          --health-cmd "rabbitmq-diagnostics -q ping"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-          --health-start-period 40s
 
     steps:
       # Install required system packages
@@ -203,12 +190,11 @@ jobs:
         ]
 
     steps:
-      # Pull specific versions of Docker images for testing
+      # Fetch Docker images needed for tests
       - name: Fetch Docker Images
         run: |
-          # Use specific versions instead of latest for reproducible tests
-          docker pull redis:7.2.3-alpine
-          docker pull rabbitmq:3.12.12-management-alpine
+          docker pull redis:latest
+          docker pull rabbitmq:latest
       
       # Configure system settings
       - name: Configure system settings
@@ -244,10 +230,6 @@ jobs:
   # Linting job
   lint:
     name: Lint Code
-    needs: unit-tests  # Add dependency on unit tests
-    if: |
-      always() &&
-      needs.unit-tests.result == 'success'
     runs-on: blacksmith-4vcpu-ubuntu-2204
     timeout-minutes: 10
     
@@ -273,19 +255,9 @@ jobs:
         run: |
           tox -e lint
 
-      # Add job summary
-      - name: Add job summary
-        run: |
-          echo "## Lint Results Summary" >> $GITHUB_STEP_SUMMARY
-          echo "✅ All linting checks passed successfully" >> $GITHUB_STEP_SUMMARY
-
   # Documentation checks job
   docs:
     name: Documentation Checks
-    needs: unit-tests  # Add dependency on unit tests
-    if: |
-      always() &&
-      needs.unit-tests.result == 'success'
     runs-on: blacksmith-4vcpu-ubuntu-2204
     timeout-minutes: 10
     
@@ -315,10 +287,3 @@ jobs:
       - name: Run configuration documentation check
         run: |
           tox -e configcheck
-
-      # Add job summary
-      - name: Add job summary
-        run: |
-          echo "## Documentation Check Results" >> $GITHUB_STEP_SUMMARY
-          echo "✅ API documentation check passed" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Configuration documentation check passed" >> $GITHUB_STEP_SUMMARY
