@@ -1,138 +1,279 @@
-# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
-# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+# This workflow runs Python tests, linting, and documentation checks for the Celery project
+# Optimization Strategy:
+# - Lint and docs jobs run first in parallel for quick feedback on code quality and documentation issues
+# - Unit tests prioritize Linux environments for faster initial results
+# - Integration and smoke tests run after lint and unit tests pass to avoid wasting resources on complex tests
+# - Windows tests run last since they're typically slower and less common failure points
 
-name: Celery
+name: Celery CI
 
 on:
   push:
-    branches: [ 'main']
+    branches: [ 'main' ]
     paths:
-        - '**.py'
-        - '**.txt'
-        - '.github/workflows/python-package.yml'
-        - '**.toml'
-        - "tox.ini"
+      - '**.py'
+      - '**.txt'
+      - '.github/workflows/python-package.yml'
+      - '**.toml'
+      - "tox.ini"
   pull_request:
     branches: [ 'main' ]
     paths:
-        - '**.py'
-        - '**.txt'
-        - '**.toml'
-        - '.github/workflows/python-package.yml'
-        - "tox.ini"
-  workflow_dispatch:
+      - '**.py'
+      - '**.txt'
+      - '**.toml'
+      - '.github/workflows/python-package.yml'
+      - "tox.ini"
+  workflow_dispatch:  # Allow manual triggering
 
+# Prevent concurrent runs of the same workflow on the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
 
+# Define permissions needed for the workflow
 permissions:
-  contents: read # to fetch code (actions/checkout)
+  contents: read  # to fetch code (actions/checkout)
+
+# Environment variables used across jobs
+env:
+  PYTHONUNBUFFERED: "1"
+  FORCE_COLOR: "1"
 
 jobs:
-  Unit:
+  # Lint job runs independently for fastest feedback
+  lint:
+    name: Lint Code
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    timeout-minutes: 10
+    
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Python environment
+      - name: Set up Python
+        uses: useblacksmith/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+      
+      # Install tox for running linters
+      - name: Install tox
+        run: |
+          python -m pip install --upgrade pip 'tox>=4.0.0'
+      
+      # Run linting
+      - name: Run linting
+        run: |
+          tox -e lint
 
+  # Documentation checks job runs in parallel with lint
+  docs:
+    name: Documentation Checks
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    timeout-minutes: 10
+    
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Python environment
+      - name: Set up Python
+        uses: useblacksmith/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+      
+      # Install tox for running doc checks
+      - name: Install tox
+        run: |
+          python -m pip install --upgrade pip 'tox>=4.0.0'
+      
+      # Run API documentation check
+      - name: Run API documentation check
+        run: |
+          tox -e apicheck
+      
+      # Run configuration documentation check
+      - name: Run configuration documentation check
+        run: |
+          tox -e configcheck
+
+  # Unit tests job with optimized matrix
+  unit-tests:
+    name: Unit Tests (Python ${{ matrix.python-version }} on ${{ matrix.os }})
+    needs: [lint, docs]
+    if: ${{ always() && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.docs.result == 'success' || needs.docs.result == 'skipped') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13', 'pypy-3.10']
-        os: ["blacksmith-4vcpu-ubuntu-2204", "windows-latest"]
-        exclude:
-            - python-version: '3.9'
-              os: "windows-latest"
-            - python-version: 'pypy-3.10'
-              os: "windows-latest"
-            - python-version: '3.10'
-              os: "windows-latest"
-            - python-version: '3.11'
-              os: "windows-latest"
-            - python-version: '3.13'
-              os: "windows-latest"
+        include:
+          # Linux tests first for faster feedback
+          - python-version: '3.13'
+            os: "blacksmith-4vcpu-ubuntu-2204"
+          - python-version: '3.12'
+            os: "blacksmith-4vcpu-ubuntu-2204"
+          - python-version: '3.11'
+            os: "blacksmith-4vcpu-ubuntu-2204"
+          - python-version: '3.10'
+            os: "blacksmith-4vcpu-ubuntu-2204"
+          - python-version: '3.9'
+            os: "blacksmith-4vcpu-ubuntu-2204"
+          - python-version: '3.8'
+            os: "blacksmith-4vcpu-ubuntu-2204"
+          - python-version: 'pypy-3.10'
+            os: "blacksmith-4vcpu-ubuntu-2204"
+          # Windows tests run last
+          - python-version: '3.8'
+            os: "windows-latest"
+          - python-version: '3.12'
+            os: "windows-latest"
 
     steps:
-    - name: Install apt packages
-      if: startsWith(matrix.os, 'blacksmith-4vcpu-ubuntu')
-      run: |
-        sudo apt-get update && sudo apt-get install -f libcurl4-openssl-dev libssl-dev libgnutls28-dev httping expect libmemcached-dev
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: useblacksmith/setup-python@v6
-      with:
-        python-version: ${{ matrix.python-version }}
-        allow-prereleases: true
-        cache: 'pip'
-        cache-dependency-path: '**/setup.py'
+      # Install required system packages on Ubuntu
+      - name: Install system dependencies
+        if: startsWith(matrix.os, 'blacksmith-4vcpu-ubuntu')
+        run: |
+          sudo apt-get update && sudo apt-get install -f libcurl4-openssl-dev libssl-dev libgnutls28-dev httping expect libmemcached-dev
+      
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Python environment
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: useblacksmith/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+          cache: 'pip'
+          cache-dependency-path: '**/setup.py'
+      
+      # Install tox for test running
+      - name: Install tox
+        run: |
+          python -m pip install --upgrade pip 'tox>=4.0.0' tox-gh-actions
+      
+      # Run unit tests
+      - name: Run unit tests
+        timeout-minutes: 30
+        run: |
+          tox --verbose --verbose
+      
+      # Upload coverage to Codecov (only when token is available)
+      - name: Upload coverage to Codecov
+        if: ${{ secrets.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@v5
+        with:
+          flags: unittests
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true
+      
+      # Add warning using workflow commands when Codecov token is missing
+      - name: Add Codecov warning
+        if: ${{ secrets.CODECOV_TOKEN == '' }}
+        run: |
+          echo "::warning title=Codecov Token Missing::CODECOV_TOKEN is not set. Code coverage was not uploaded to Codecov. This is expected for external contributors and does not indicate a test failure."
+          echo "⚠️ **Warning:** CODECOV_TOKEN is not set. Code coverage was not uploaded to Codecov." >> $GITHUB_STEP_SUMMARY
+          echo "This is expected for external contributors and does not indicate a test failure." >> $GITHUB_STEP_SUMMARY
 
-    - name: Install tox
-      run: python -m pip install --upgrade pip 'tox' tox-gh-actions
-    - name: >
-        Run tox for
-        "${{ matrix.python-version }}-unit"
-      timeout-minutes: 30
-      run: |
-        tox --verbose --verbose
+      # Add job summary
+      - name: Job summary
+        run: |
+          echo "## Unit Tests Summary" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Completed unit tests for Python ${{ matrix.python-version }} on ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
 
-    - uses: codecov/codecov-action@v5
-      with:
-        flags: unittests # optional
-        fail_ci_if_error: true # optional (default = false)
-        token: ${{ secrets.CODECOV_TOKEN }}
-        verbose: true # optional (default = false)
-
-  Integration:
-      needs:
-      - Unit
-      if: needs.Unit.result == 'success'
-      timeout-minutes: 240
-
-      runs-on: blacksmith-4vcpu-ubuntu-2204
-      strategy:
-          fail-fast: false
-          matrix:
-              python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
-              toxenv: ['redis', 'rabbitmq', 'rabbitmq_redis']
-
-      services:
-          redis:
-              image: redis
-              ports:
-                  - 6379:6379
-              env:
-                  REDIS_HOST: localhost
-                  REDIS_PORT: 6379
-          rabbitmq:
-              image: rabbitmq
-              ports:
-                  - 5672:5672
-              env:
-                  RABBITMQ_DEFAULT_USER: guest
-                  RABBITMQ_DEFAULT_PASS: guest
-
-      steps:
-          -   name: Install apt packages
-              run: |
-                  sudo apt-get update && sudo apt-get install -f libcurl4-openssl-dev libssl-dev libgnutls28-dev httping expect libmemcached-dev
-
-          -   uses: actions/checkout@v4
-          -   name: Set up Python ${{ matrix.python-version }}
-              uses: useblacksmith/setup-python@v6
-              with:
-                  python-version: ${{ matrix.python-version }}
-                  allow-prereleases: true
-                  cache: 'pip'
-                  cache-dependency-path: '**/setup.py'
-          -   name: Install tox
-              run: python -m pip install --upgrade pip 'tox' tox-gh-actions
-          -   name: >
-                  Run tox for
-                  "${{ matrix.python-version }}-integration-${{ matrix.toxenv }}"
-              timeout-minutes: 60
-              run: >
-                  tox --verbose --verbose -e
-                  "${{ matrix.python-version }}-integration-${{ matrix.toxenv }}" -vv
-  Smoke:
-    needs:
-    - Unit
-    if: needs.Unit.result == 'success'
+  # Integration tests job
+  integration-tests:
+    name: Integration Tests (Python ${{ matrix.python-version }} - ${{ matrix.toxenv }})
+    needs: [unit-tests, lint]
+    if: ${{ needs.unit-tests.result == 'success' && needs.lint.result == 'success' }}
     runs-on: blacksmith-4vcpu-ubuntu-2204
+    timeout-minutes: 60
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
+        toxenv: ['redis', 'rabbitmq', 'rabbitmq_redis']
+
+    # Define services needed for integration tests
+    services:
+      # Redis service container for cache and message broker testing
+      redis:
+        # Use specific version instead of latest for stability
+        image: redis:7.2.3-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --health-start-period 30s
+      
+      # RabbitMQ service container for message broker testing
+      rabbitmq:
+        # Use specific version with management plugin for better monitoring
+        image: rabbitmq:3.12.12-management-alpine
+        ports:
+          - 5672:5672    # AMQP protocol port
+          - 15672:15672  # Management UI port
+        env:
+          RABBITMQ_DEFAULT_USER: guest
+          RABBITMQ_DEFAULT_PASS: guest
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --health-start-period 40s
+
+    steps:
+      # Install required system packages
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -f libcurl4-openssl-dev libssl-dev libgnutls28-dev httping expect libmemcached-dev
+      
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Python environment
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: useblacksmith/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+          cache: 'pip'
+          cache-dependency-path: '**/setup.py'
+      
+      # Install tox for test running
+      - name: Install tox
+        run: |
+          python -m pip install --upgrade pip 'tox>=4.0.0' tox-gh-actions
+      
+      # Run integration tests
+      - name: Run integration tests
+        timeout-minutes: 60
+        run: >
+          tox --verbose --verbose -e
+          "${{ matrix.python-version }}-integration-${{ matrix.toxenv }}" -vv
+
+  # Smoke tests job
+  smoke-tests:
+    name: Smoke Tests (Python ${{ matrix.python-version }} - ${{ matrix.test-case }})
+    needs: [unit-tests, lint]
+    if: ${{ needs.unit-tests.result == 'success' && needs.lint.result == 'success' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    timeout-minutes: 60
+    
     strategy:
       fail-fast: false
       matrix:
@@ -151,18 +292,25 @@ jobs:
         ]
 
     steps:
+      # Fetch Docker images needed for tests
       - name: Fetch Docker Images
         run: |
-          docker pull redis:latest
-          docker pull rabbitmq:latest
-
-      - name: Install apt packages
+          # Use specific versions instead of latest for reproducible tests
+          docker pull redis:7.2.3-alpine
+          docker pull rabbitmq:3.12.12-management-alpine
+      
+      # Configure system settings
+      - name: Configure system settings
         run: |
           sudo apt update
-          sudo apt-get install -y procps  # Install procps to enable sysctl
+          sudo apt-get install -y procps
           sudo sysctl -w vm.overcommit_memory=1
-
-      - uses: actions/checkout@v4
+      
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Python environment
       - name: Set up Python ${{ matrix.python-version }}
         uses: useblacksmith/setup-python@v6
         with:
@@ -170,11 +318,14 @@ jobs:
           allow-prereleases: true
           cache: 'pip'
           cache-dependency-path: '**/setup.py'
-
+      
+      # Install tox for test running
       - name: Install tox
-        run: python -m pip install --upgrade pip tox tox-gh-actions
-
-      - name: Run tox for "${{ matrix.python-version }}-smoke-${{ matrix.test-case }}"
+        run: |
+          python -m pip install --upgrade pip 'tox>=4.0.0' tox-gh-actions
+      
+      # Run smoke tests
+      - name: Run smoke tests
         timeout-minutes: 60
         run: |
           tox --verbose --verbose -e "${{ matrix.python-version }}-smoke" -- -n auto -k ${{ matrix.test-case }}
