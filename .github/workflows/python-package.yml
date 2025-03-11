@@ -170,10 +170,11 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
       
-      # Add warning to job summary when Codecov token is missing
-      - name: Add Codecov warning to summary
+      # Add warning using workflow commands when Codecov token is missing
+      - name: Add Codecov warning
         if: ${{ secrets.CODECOV_TOKEN == '' }}
         run: |
+          echo "::warning title=Codecov Token Missing::CODECOV_TOKEN is not set. Code coverage was not uploaded to Codecov. This is expected for external contributors and does not indicate a test failure."
           echo "⚠️ **Warning:** CODECOV_TOKEN is not set. Code coverage was not uploaded to Codecov." >> $GITHUB_STEP_SUMMARY
           echo "This is expected for external contributors and does not indicate a test failure." >> $GITHUB_STEP_SUMMARY
 
