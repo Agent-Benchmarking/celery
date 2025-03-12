@@ -1,0 +1,32 @@
+[
+  {
+    "id": 100,
+    "name": "Service 0",
+    "value": "38",
+    "availability": 2
+  },
+  {
+    "id": 101,
+    "name": "Service 1",
+    "value": "58",
+    "availability": 1
+  },
+  {
+    "id": 102,
+    "name": "Service 2",
+    "value": "33",
+    "availability": 2
+  },
+  {
+    "id": 103,
+    "name": "Service 3",
+    "value": "51",
+    "availability": 3
+  },
+  {
+    "id": 104,
+    "name": "Service 4",
+    "value": "62",
+    "availability": 5
+  }
+]

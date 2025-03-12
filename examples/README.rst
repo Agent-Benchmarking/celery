@@ -16,3 +16,9 @@ Example project using remote tasks (webhook tasks)
 Example HTTP service exposing the ability to apply tasks and query the
 resulting status/return value.
 
+* etl_pipeline
+
+Example ETL (Extract, Transform, Load) pipeline using Celery's Canvas feature,
+demonstrating how to create complex data processing workflows using signatures,
+chains, groups, and chords.
+
