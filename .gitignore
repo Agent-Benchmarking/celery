@@ -38,3 +38,5 @@ integration-tests-config.json
 statefilename.*
 dump.rdb
 .env
+# ETL pipeline example output files
+examples/etl_pipeline/data/output/*.json
